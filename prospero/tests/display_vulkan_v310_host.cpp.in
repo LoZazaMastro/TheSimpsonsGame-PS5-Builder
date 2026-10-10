@@ -1,0 +1,261 @@
+// Executes the complete production display.cpp with real Vulkan header types,
+// deterministic function pointers and a CVar storage double. No GPU is used.
+#include <algorithm>
+#include <cassert>
+#include <cerrno>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <rex/ui/vulkan/display_prospero.h>
+
+std::vector<std::string> fixture_logs;
+template <typename... T> void fixture_log(const char* level, const char* format, T&&...) {
+  fixture_logs.push_back(std::string(level) + ": " + format);
+}
+
+#include "production_display.cpp"
+
+using namespace rex::ui::vulkan;
+template <typename T> static T Handle(uintptr_t value) { return reinterpret_cast<T>(value); }
+template <typename T> struct Enumeration {
+  std::vector<T> values;
+  VkResult error = VK_SUCCESS;
+  unsigned queries = 0, fills = 0, incomplete = 0;
+  bool grow = false, shrink = false;
+  VkResult Read(uint32_t* count, T* output) {
+    if (error != VK_SUCCESS) return error;
+    if (!output) {
+      ++queries;
+      *count = grow && queries == 1 ? 1 : uint32_t(values.size()) + (shrink ? 1 : 0);
+      return VK_SUCCESS;
+    }
+    ++fills;
+    const uint32_t written = std::min(*count, uint32_t(values.size()));
+    std::copy_n(values.begin(), written, output);
+    *count = written;
+    return fills <= incomplete || written < values.size() ? VK_INCOMPLETE : VK_SUCCESS;
+  }
+};
+
+static struct Scene {
+  Enumeration<VkDisplayPropertiesKHR> displays;
+  Enumeration<VkDisplayPlanePropertiesKHR> planes;
+  Enumeration<VkDisplayModePropertiesKHR> modes;
+  Enumeration<VkDisplayKHR> supported;
+  VkDisplayPlaneCapabilitiesKHR caps{};
+  VkResult caps_result = VK_SUCCESS;
+  uint32_t physical_rate = 59940;
+  unsigned hide_calls = 0, destroy_calls = 0;
+  bool refuse_high = false, refuse_all = false, create_null = false, fail_setenv = false;
+  std::vector<VkDisplayModeKHR> created;
+  std::vector<VkDisplaySurfaceCreateInfoKHR> create_infos;
+} scene;
+
+extern "C" int __real_setenv(const char*, const char*, int);
+extern "C" int __wrap_setenv(const char* name, const char* value, int overwrite) {
+  if (scene.fail_setenv) { errno = ENOMEM; return -1; }
+  return __real_setenv(name, value, overwrite);
+}
+extern "C" int sceSystemServiceHideSplashScreen() { ++scene.hide_calls; return 0; }
+extern "C" uint32_t simpsons_radv_videoout_refresh_millihertz() { return scene.physical_rate; }
+
+static VKAPI_ATTR VkResult VKAPI_CALL Displays(VkPhysicalDevice, uint32_t* count, VkDisplayPropertiesKHR* output) { return scene.displays.Read(count, output); }
+static VKAPI_ATTR VkResult VKAPI_CALL Planes(VkPhysicalDevice, uint32_t* count, VkDisplayPlanePropertiesKHR* output) { return scene.planes.Read(count, output); }
+static VKAPI_ATTR VkResult VKAPI_CALL Modes(VkPhysicalDevice, VkDisplayKHR, uint32_t* count, VkDisplayModePropertiesKHR* output) { return scene.modes.Read(count, output); }
+static VKAPI_ATTR VkResult VKAPI_CALL Supported(VkPhysicalDevice, uint32_t, uint32_t* count, VkDisplayKHR* output) { return scene.supported.Read(count, output); }
+static VKAPI_ATTR VkResult VKAPI_CALL Caps(VkPhysicalDevice, VkDisplayModeKHR, uint32_t, VkDisplayPlaneCapabilitiesKHR* output) { *output = scene.caps; return scene.caps_result; }
+static VKAPI_ATTR VkResult VKAPI_CALL Create(VkInstance, const VkDisplaySurfaceCreateInfoKHR* info, const VkAllocationCallbacks*, VkSurfaceKHR* output) {
+  scene.created.push_back(info->displayMode); scene.create_infos.push_back(*info);
+  if (scene.refuse_all || (scene.refuse_high && info->displayMode == Handle<VkDisplayModeKHR>(120))) return VK_ERROR_INITIALIZATION_FAILED;
+  *output = scene.create_null ? VK_NULL_HANDLE : Handle<VkSurfaceKHR>(99);
+  return VK_SUCCESS;
+}
+static VKAPI_ATTR void VKAPI_CALL Destroy(VkInstance, VkSurfaceKHR surface, const VkAllocationCallbacks*) {
+  assert(surface == Handle<VkSurfaceKHR>(99)); ++scene.destroy_calls;
+}
+
+static VulkanInstance Reset(uint32_t request = 60) {
+  scene = {}; fixture_logs.clear();
+  VkDisplayPropertiesKHR display{};
+  display.display = Handle<VkDisplayKHR>(1); display.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+  scene.displays.values = {display}; scene.planes.values = {{VK_NULL_HANDLE, 3}};
+  scene.supported.values = {display.display};
+  scene.modes.values = {
+    {Handle<VkDisplayModeKHR>(60), {{3840, 2160}, 59940}},
+    {Handle<VkDisplayModeKHR>(120), {{3840, 2160}, 119880}}
+  };
+  scene.caps.supportedAlpha = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+  scene.caps.maxSrcExtent = scene.caps.maxDstExtent = {3840, 2160};
+  mock_prospero_output_hz = request;
+  assert(InitializeProsperoDisplayPolicy());
+  assert(GetProsperoRequestedOutputHz() == (request == 120 ? 120u : 60u));
+  assert(std::strcmp(std::getenv("SIMPSONS_VIDEOOUT_120HZ"), request == 120 ? "1" : "0") == 0);
+  assert(GetProsperoOutputMilliHertz() == 0);
+  VulkanInstance instance;
+  instance.fn = {Displays, Planes, Supported, Modes, Caps, Create, Destroy};
+  return instance;
+}
+
+static VkResult Surface(const VulkanInstance& instance, VkSurfaceKHR* output) {
+  return CreateProsperoDisplaySurface(instance, Handle<VkPhysicalDevice>(1), output);
+}
+static void Success(const VulkanInstance& instance, uint32_t mode, uint32_t rate) {
+  VkSurfaceKHR output = VK_NULL_HANDLE;
+  assert(Surface(instance, &output) == VK_SUCCESS && output == Handle<VkSurfaceKHR>(99));
+  assert(!scene.created.empty() && scene.created.back() == Handle<VkDisplayModeKHR>(mode));
+  assert(GetProsperoOutputMilliHertz() == rate && scene.hide_calls == 1);
+  const auto& info = scene.create_infos.back();
+  assert(info.sType == VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR && info.pNext == nullptr);
+  assert(info.imageExtent.width == 3840 && info.imageExtent.height == 2160 && info.planeStackIndex == 3);
+  assert(info.transform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR && info.globalAlpha == 1.0f);
+}
+static void Failure(const VulkanInstance& instance, VkResult expected = VK_ERROR_INITIALIZATION_FAILED) {
+  VkSurfaceKHR output = Handle<VkSurfaceKHR>(200);
+  assert(Surface(instance, &output) == expected && output == VK_NULL_HANDLE);
+  assert(GetProsperoOutputMilliHertz() == 0 && scene.hide_calls == 0);
+}
+static void Pass(const char* name) { std::printf("PASS Vulkan %s\n", name); }
+
+int main() {
+  {
+    auto instance = Reset(); Success(instance, 60, 59940);
+    assert(scene.created.size() == 1); Pass("default-60-selects-only-60");
+  }
+  {
+    auto instance = Reset(120); scene.physical_rate = 119880; Success(instance, 120, 119880);
+    assert(scene.created.size() == 1); Pass("120-request-prefers-advertised-120");
+  }
+  {
+    auto instance = Reset(120); scene.modes.values.resize(1); Success(instance, 60, 59940);
+    assert(std::any_of(fixture_logs.begin(), fixture_logs.end(), [](const auto& s) { return s.find("using the supported 60 Hz") != std::string::npos; }));
+    Pass("120-unavailable-falls-back-and-logs");
+  }
+  {
+    auto instance = Reset(120); scene.refuse_high = true; scene.physical_rate = 119880;
+    Success(instance, 60, 119880); assert(scene.created.size() == 2);
+    Pass("creation-fallback-retains-physical-output-clock");
+  }
+  {
+    auto instance = Reset(144); Success(instance, 60, 59940); Pass("invalid-config-request-normalizes-to-60");
+  }
+  {
+    auto instance = Reset(120);
+    scene.modes.values = {{Handle<VkDisplayModeKHR>(30), {{3840, 2160}, 30000}}, {Handle<VkDisplayModeKHR>(144), {{3840, 2160}, 144000}}, {Handle<VkDisplayModeKHR>(720), {{1280, 720}, 120000}}};
+    Failure(instance); assert(scene.created.empty()); Pass("invalid-mode-rate-and-resolution-rejected");
+  }
+  {
+    auto instance = Reset(); scene.modes.values.erase(scene.modes.values.begin()); Failure(instance);
+    assert(scene.created.empty()); Pass("60-request-does-not-silently-select-120");
+  }
+  {
+    auto instance = Reset(); scene.displays.values.push_back(scene.displays.values.front()); scene.displays.grow = true;
+    Success(instance, 60, 59940); assert(scene.displays.queries == 2 && scene.displays.fills == 2);
+    Pass("growing-enumeration-retried-with-new-count");
+  }
+  {
+    auto instance = Reset(); scene.displays.shrink = true; Success(instance, 60, 59940);
+    assert(scene.displays.fills == 1); Pass("shrinking-enumeration-uses-only-written-entries");
+  }
+  {
+    auto instance = Reset(); scene.displays.incomplete = 10; Failure(instance, VK_INCOMPLETE);
+    assert(scene.displays.queries == 3 && scene.displays.fills == 3); Pass("persistent-incomplete-enumeration-is-bounded");
+  }
+  {
+    auto instance = Reset(); scene.displays.error = VK_ERROR_OUT_OF_HOST_MEMORY; Failure(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+    Pass("display-enumeration-error-propagated");
+  }
+  {
+    auto instance = Reset(); scene.planes.error = VK_ERROR_DEVICE_LOST; Failure(instance, VK_ERROR_DEVICE_LOST);
+    Pass("plane-enumeration-error-propagated");
+  }
+  {
+    auto instance = Reset(); scene.displays.values.clear(); Failure(instance); Pass("empty-display-list-fails");
+  }
+  {
+    auto instance = Reset(); scene.planes.values.clear(); Failure(instance); Pass("empty-plane-list-fails");
+  }
+  {
+    auto instance = Reset(); scene.modes.error = VK_ERROR_INITIALIZATION_FAILED; Failure(instance);
+    Pass("mode-enumeration-failure-does-not-use-unwritten-data");
+  }
+  {
+    auto instance = Reset(); scene.caps_result = VK_ERROR_INITIALIZATION_FAILED; Failure(instance);
+    assert(scene.created.empty()); Pass("capability-query-failure-rejected");
+  }
+  {
+    auto instance = Reset(); scene.caps.maxSrcExtent.width = 1920; Failure(instance); Pass("insufficient-source-extent-rejected");
+  }
+  {
+    auto instance = Reset(); scene.caps.minDstPosition.x = 1; Failure(instance); Pass("destination-origin-must-be-supported");
+  }
+  {
+    auto instance = Reset(); scene.supported.values.clear(); Failure(instance); Pass("unassociated-plane-rejected");
+  }
+  {
+    auto instance = Reset(); scene.planes.values.front().currentDisplay = Handle<VkDisplayKHR>(5);
+    Failure(instance); Pass("occupied-plane-rejected");
+  }
+  {
+    auto instance = Reset(); scene.displays.values.front().supportedTransforms = VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR;
+    Failure(instance); Pass("identity-transform-required");
+  }
+  {
+    auto instance = Reset(); scene.caps.supportedAlpha = 0; Failure(instance); Pass("unsupported-alpha-rejected");
+  }
+  {
+    auto instance = Reset(); scene.caps.supportedAlpha = VK_DISPLAY_PLANE_ALPHA_GLOBAL_BIT_KHR; Success(instance, 60, 59940);
+    assert(scene.create_infos.back().alphaMode == VK_DISPLAY_PLANE_ALPHA_GLOBAL_BIT_KHR); Pass("supported-global-alpha-fallback");
+  }
+  {
+    auto instance = Reset(120); scene.refuse_all = true; Failure(instance);
+    assert(scene.created.size() == 2); Pass("surface-creation-failures-return-no-handle");
+  }
+  {
+    auto instance = Reset(); scene.create_null = true; Failure(instance); Pass("success-with-null-surface-is-not-published");
+  }
+  {
+    auto instance = Reset(); scene.physical_rate = 0; Failure(instance);
+    assert(scene.destroy_calls == 1); Pass("unverified-zero-output-destroys-new-surface");
+  }
+  {
+    auto instance = Reset(); scene.physical_rate = 144000; Failure(instance);
+    assert(scene.destroy_calls == 1); Pass("unexpected-physical-output-is-not-published");
+  }
+  {
+    auto instance = Reset(); instance.ext.ext_KHR_display = false; Failure(instance, VK_ERROR_EXTENSION_NOT_PRESENT);
+    Pass("missing-display-extension-rejected");
+  }
+  {
+    for (unsigned missing = 0; missing < 6; ++missing) {
+      auto instance = Reset();
+      switch (missing) {
+        case 0: instance.fn.vkGetPhysicalDeviceDisplayPropertiesKHR = nullptr; break;
+        case 1: instance.fn.vkGetPhysicalDeviceDisplayPlanePropertiesKHR = nullptr; break;
+        case 2: instance.fn.vkGetDisplayPlaneSupportedDisplaysKHR = nullptr; break;
+        case 3: instance.fn.vkGetDisplayModePropertiesKHR = nullptr; break;
+        case 4: instance.fn.vkGetDisplayPlaneCapabilitiesKHR = nullptr; break;
+        case 5: instance.fn.vkCreateDisplayPlaneSurfaceKHR = nullptr; break;
+      }
+      Failure(instance, VK_ERROR_EXTENSION_NOT_PRESENT);
+    }
+    Pass("missing-required-function-pointers-rejected");
+  }
+  {
+    auto instance = Reset(); (void)instance;
+    scene.fail_setenv = true; mock_prospero_output_hz = 120;
+    assert(!InitializeProsperoDisplayPolicy()); assert(GetProsperoRequestedOutputHz() == 60);
+    assert(std::strcmp(std::getenv("SIMPSONS_VIDEOOUT_120HZ"), "0") == 0);
+    Pass("environment-publication-failure-prevents-policy-change");
+  }
+  {
+    auto instance = Reset(120); scene.physical_rate = 119880; Success(instance, 120, 119880);
+    mock_prospero_output_hz = 60;
+    assert(GetProsperoRequestedOutputHz() == 120 && GetProsperoOutputMilliHertz() == 119880);
+    assert(InitializeProsperoDisplayPolicy()); assert(GetProsperoRequestedOutputHz() == 60 && GetProsperoOutputMilliHertz() == 0);
+    Pass("request-is-latched-and-effective-clock-published-separately");
+  }
+  return 0;
+}

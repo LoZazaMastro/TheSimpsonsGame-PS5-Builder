@@ -1,0 +1,353 @@
+// Host boundary fixture. The runner inserts the actual production methods.
+// Vulkan allocation/compilation and fence signalling are controlled fixtures.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdlib>
+#include <deque>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <set>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <rex/graphics/vulkan/pipeline_completion_queue.h>
+
+using VkPipeline = uintptr_t;
+using VkShaderModule = uintptr_t;
+using VkDevice = uintptr_t;
+constexpr uintptr_t VK_NULL_HANDLE = 0;
+void Check(bool value, const char* why) {
+  if (!value) { std::cerr << "FAIL " << why << '\n'; std::abort(); }
+}
+#define assert_false(value) Check(!(value), #value)
+std::atomic<size_t> error_logs{0}, allocations{0};
+std::atomic<bool> count_allocations{false};
+[[gnu::noinline]] void* operator new(size_t size) {
+  if (count_allocations.load()) allocations.fetch_add(1);
+  if (void* p = std::malloc(size ? size : 1)) return p;
+  throw std::bad_alloc();
+}
+[[gnu::noinline]] void* operator new[](size_t size) { return ::operator new(size); }
+[[gnu::noinline]] void operator delete(void* p) noexcept { std::free(p); }
+[[gnu::noinline]] void operator delete[](void* p) noexcept { std::free(p); }
+[[gnu::noinline]] void operator delete(void* p, size_t) noexcept { std::free(p); }
+[[gnu::noinline]] void operator delete[](void* p, size_t) noexcept { std::free(p); }
+template<class... T> void LogError(const T&...) { error_logs.fetch_add(1); }
+#define REXGPU_ERROR(...) LogError(__VA_ARGS__)
+
+namespace rex::thread {
+class Event {
+ public:
+  void Set() { std::lock_guard lock(mutex); signalled = true; cv.notify_all(); }
+  void Reset() { std::lock_guard lock(mutex); signalled = false; }
+  void Await() {
+    std::unique_lock lock(mutex);
+    Check(cv.wait_for(lock, std::chrono::seconds(5), [&] { return signalled; }),
+          "creation completion event starvation");
+  }
+ private:
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool signalled = true;
+};
+struct Thread {
+  template<class F> explicit Thread(F f) : native(std::move(f)) {}
+  ~Thread() { if (native.joinable()) native.join(); }
+  std::thread native;
+};
+void Wait(Event* event, bool) { event->Await(); }
+void Wait(Thread* thread, bool) { if (thread->native.joinable()) thread->native.join(); }
+}
+
+std::mutex gpu_mutex;
+std::set<uintptr_t> gpu_created, gpu_destroyed;
+std::unordered_map<uintptr_t, uint64_t> gpu_last_use;
+uint64_t gpu_completed = 0;
+void RegisterPipeline(uintptr_t handle) {
+  std::lock_guard lock(gpu_mutex);
+  Check(gpu_created.insert(handle).second, "duplicate fake pipeline allocation");
+}
+void DestroyPipeline(VkDevice, VkPipeline pipeline, const void*) {
+  std::lock_guard lock(gpu_mutex);
+  Check(gpu_created.count(pipeline) == 1, "destroy unknown pipeline");
+  Check(gpu_last_use[pipeline] <= gpu_completed, "pipeline destroyed before submitted use completed");
+  Check(gpu_destroyed.insert(pipeline).second, "pipeline destroyed twice");
+}
+namespace rex::ui::vulkan {
+struct VulkanDevice {
+  struct Functions { decltype(&DestroyPipeline) vkDestroyPipeline = DestroyPipeline; } fn;
+  const Functions& functions() const { return fn; }
+  VkDevice device() const { return 1; }
+};
+}
+namespace ui = rex::ui;
+struct Processor {
+  std::thread::id owner = std::this_thread::get_id();
+  uint64_t submission_completed_ = 10;
+  std::deque<uintptr_t> submissions_in_flight_fences_{1, 2};
+  rex::ui::vulkan::VulkanDevice device;
+  uint64_t GetCurrentSubmission() const {
+    Check(std::this_thread::get_id() == owner, "worker read processor submission state");
+    return submission_completed_ + uint64_t(submissions_in_flight_fences_.size()) + 1;
+  }
+  uint64_t GetCompletedSubmission() const {
+    Check(std::this_thread::get_id() == owner, "worker read completed submission");
+    return submission_completed_;
+  }
+  rex::ui::vulkan::VulkanDevice* GetVulkanDevice() { return &device; }
+};
+
+std::atomic<bool> intercept_read{false}, reader_loaded_handle{false}, completion_queued{false};
+void BetweenHandleAndLayout() {
+  if (!intercept_read.load()) return;
+  reader_loaded_handle.store(true);
+  while (!completion_queued.load()) std::this_thread::yield();
+}
+
+class VulkanPipelineCache {
+ public:
+  struct PipelineLayoutProvider { uintptr_t identity = 0; };
+@PIPELINE_TYPES@
+  using Entry = std::pair<const int, Pipeline>;
+  struct PipelineCreationArguments {
+    uint8_t priority = 0;
+    Entry* pipeline = nullptr;
+    const PipelineLayoutProvider* pipeline_layout = nullptr;
+    uintptr_t new_handle = 0;
+    bool will_fail = false;
+    unsigned delay_ms = 0;
+  };
+  struct PipelineCreationArgumentsPriorityComparator {
+    bool operator()(const PipelineCreationArguments& a, const PipelineCreationArguments& b) const {
+      return a.priority < b.priority;
+    }
+  };
+  Processor command_processor_;
+  rex::graphics::vulkan::PipelineCompletionQueue<CompletedPipelineCreation> completed_pipeline_creations_;
+  std::deque<std::pair<uint64_t, VkPipeline>> deferred_destroy_pipelines_;
+  size_t pipelines_failed_ = 0;
+  std::atomic<size_t> owner_compiles{0}, worker_compiles{0}, entered_compiles{0};
+  std::mutex creation_request_lock_;
+  std::condition_variable creation_request_cond_;
+  std::priority_queue<PipelineCreationArguments, std::vector<PipelineCreationArguments>,
+                      PipelineCreationArgumentsPriorityComparator> creation_queue_;
+  size_t creation_threads_busy_ = 0;
+  bool startup_loading_ = false;
+  std::unique_ptr<rex::thread::Event> creation_completion_event_ = std::make_unique<rex::thread::Event>();
+  bool creation_completion_set_event_ = false;
+  size_t creation_threads_shutdown_from_ = SIZE_MAX;
+  std::vector<std::unique_ptr<rex::thread::Thread>> creation_threads_;
+  bool shader_storage_file_flush_needed_ = false, pipeline_storage_file_flush_needed_ = false;
+  bool storage_write_flush_shaders_ = false, storage_write_flush_pipelines_ = false;
+  std::mutex storage_write_request_lock_;
+  std::condition_variable storage_write_request_cond_;
+  void ApplyPipelineCreation(const CompletedPipelineCreation&);
+  void ApplyCompletedPipelineCreations();
+  void GetPipelineAndLayoutByHandle(void*, VkPipeline&, const PipelineLayoutProvider*&, bool*) const;
+  void ProcessDeferredPipelineDestructions(bool);
+  void CreationThread(size_t);
+  void CreateQueuedPipelinesOnProcessorThread();
+  void EndSubmission();
+  bool EnsurePipelineCreated(const PipelineCreationArguments& creation_arguments,
+                             VkShaderModule fragment_shader_override = VK_NULL_HANDLE,
+                             bool defer_publication = false);
+  void StopWorkers() {
+@STOP_WORKERS@
+  }
+  void StartWorkers(size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+      creation_threads_.push_back(std::make_unique<rex::thread::Thread>([this, i] { CreationThread(i); }));
+    }
+  }
+  void Enqueue(const PipelineCreationArguments& args) {
+    { std::lock_guard lock(creation_request_lock_); creation_queue_.push(args); }
+    creation_request_cond_.notify_one();
+  }
+  void Cleanup(const std::vector<Entry*>& entries) {
+    StopWorkers();
+    gpu_completed = UINT64_MAX;
+    ProcessDeferredPipelineDestructions(true);
+    for (Entry* entry : entries) {
+      auto handle = entry->second.pipeline.load();
+      if (handle) DestroyPipeline(1, handle, nullptr);
+    }
+    Check(gpu_created == gpu_destroyed, "teardown left a completed or placeholder pipeline alive");
+  }
+};
+
+@METHODS@
+
+bool VulkanPipelineCache::EnsurePipelineCreated(const PipelineCreationArguments& creation_arguments,
+                                                VkShaderModule fragment_shader_override,
+                                                bool defer_publication) {
+@ENSURE_HANDOFF@
+  // This replaces only shader compilation / vkCreateGraphicsPipelines. The
+  // exact production routing, synchronous precheck and failure tail run above.
+  if (std::this_thread::get_id() == command_processor_.owner) ++owner_compiles;
+  else ++worker_compiles;
+  ++entered_compiles;
+  if (creation_arguments.delay_ms)
+    std::this_thread::sleep_for(std::chrono::milliseconds(creation_arguments.delay_ms));
+  if (creation_arguments.will_fail) return fail();
+  RegisterPipeline(creation_arguments.new_handle);
+  complete(creation_arguments.new_handle, creation_arguments.pipeline_layout, false);
+  return true;
+}
+
+void ResetGpu() {
+  gpu_created.clear(); gpu_destroyed.clear(); gpu_last_use.clear(); gpu_completed = 0;
+  error_logs.store(0);
+}
+void Ready(VulkanPipelineCache& cache, VulkanPipelineCache::Entry& entry,
+           uintptr_t expected, const VulkanPipelineCache::PipelineLayoutProvider* expected_layout,
+           bool expected_unavailable) {
+  VkPipeline handle = 0;
+  const VulkanPipelineCache::PipelineLayoutProvider* layout = nullptr;
+  bool unavailable = false;
+  cache.GetPipelineAndLayoutByHandle(&entry.second, handle, layout, &unavailable);
+  Check(handle == expected && layout == expected_layout && unavailable == expected_unavailable,
+        "incoherent or incorrectly available pipeline snapshot");
+}
+
+int main() {
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    allocations = 0; count_allocations = true;
+    for (unsigned i = 0; i < 25000; ++i) cache.ApplyCompletedPipelineCreations();
+    count_allocations = false;
+    Check(allocations == 0, "empty completion drain allocated on draw path");
+    cache.StopWorkers();
+    std::cout << "PASS empty draw path: 25000 drains, zero allocations\n";
+  }
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    VulkanPipelineCache::Entry entry;
+    VulkanPipelineCache::PipelineLayoutProvider old_layout{1}, new_layout{2};
+    Check(cache.EnsurePipelineCreated({0, &entry, &old_layout, 101}, 1), "placeholder creation");
+    intercept_read = true; reader_loaded_handle = false; completion_queued = false;
+    std::thread writer([&] {
+      while (!reader_loaded_handle.load()) std::this_thread::yield();
+      cache.EnsurePipelineCreated({0, &entry, &new_layout, 102}, 0, true);
+      completion_queued = true;
+    });
+    Ready(cache, entry, 101, &old_layout, true);
+    writer.join(); intercept_read = false;
+    Check(cache.deferred_destroy_pipelines_.empty(), "worker assigned a retirement index");
+    cache.ApplyCompletedPipelineCreations();
+    Ready(cache, entry, 102, &new_layout, false);
+    cache.Cleanup({&entry});
+    std::cout << "PASS completion during reader: old handle/layout remain pending until owner drain\n";
+  }
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    VulkanPipelineCache::Entry entry;
+    VulkanPipelineCache::PipelineLayoutProvider layout{3};
+    cache.EnsurePipelineCreated({0, &entry, &layout, 201}, 1);
+    gpu_last_use[201] = 13;
+    // Pause reclamation between the exact two original CP operations. The
+    // worker may enqueue here, but must never inspect this temporary state.
+    cache.command_processor_.submissions_in_flight_fences_.clear();
+    std::thread writer([&] { cache.EnsurePipelineCreated({0, &entry, &layout, 202}, 0, true); });
+    writer.join();
+    cache.command_processor_.submission_completed_ += 2;
+    cache.ApplyCompletedPipelineCreations();
+    Check(cache.deferred_destroy_pipelines_.front().first == 13, "retirement used torn submission pair");
+    gpu_completed = 12;
+    cache.ProcessDeferredPipelineDestructions(false);
+    Check(gpu_destroyed.empty(), "retirement crossed unsignalled fence");
+    cache.command_processor_.submission_completed_ = gpu_completed = 13;
+    cache.ProcessDeferredPipelineDestructions(false);
+    Check(gpu_destroyed.count(201) == 1 && gpu_destroyed.size() == 1, "completed placeholder not reclaimed");
+    cache.Cleanup({&entry});
+    std::cout << "PASS fence retirement: mid-reclaim completion kept alive through submission13\n";
+  }
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    VulkanPipelineCache::Entry sync, failed, optional;
+    VulkanPipelineCache::PipelineLayoutProvider layout{4};
+    Check(cache.EnsurePipelineCreated({0, &sync, &layout, 301}), "synchronous compile failed");
+    Ready(cache, sync, 301, &layout, false);
+    cache.EnsurePipelineCreated({0, &failed, &layout, 302}, 1);
+    std::thread writer([&] { cache.EnsurePipelineCreated({0, &failed, &layout, 0, true}, 0, true); });
+    writer.join(); cache.ApplyCompletedPipelineCreations();
+    Ready(cache, failed, 0, nullptr, true);
+    auto attempts = cache.entered_compiles.load();
+    for (unsigned i = 0; i < 1000; ++i)
+      Check(!cache.EnsurePipelineCreated({0, &failed, &layout, 303}), "failed cache entry was retried");
+    Check(cache.entered_compiles == attempts && cache.pipelines_failed_ == 1 && error_logs == 1,
+          "failed pipeline caused retry or repeated error publication");
+    Check(!cache.EnsurePipelineCreated({0, &optional, &layout, 0, true}, 1), "optional placeholder failure ignored");
+    Check(!optional.second.creation_failed, "optional failure prevented real fallback");
+    Check(cache.EnsurePipelineCreated({0, &optional, &layout, 304}), "real fallback after optional failure");
+    Ready(cache, optional, 304, &layout, false);
+    cache.Cleanup({&sync, &failed, &optional});
+    std::cout << "PASS synchronous/failure paths: unavailable stays unavailable, no retries, optional fallback works\n";
+  }
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    constexpr size_t count = 4096;
+    auto entries = std::make_unique<VulkanPipelineCache::Entry[]>(count);
+    auto layouts = std::make_unique<VulkanPipelineCache::PipelineLayoutProvider[]>(count);
+    std::atomic<size_t> done{0};
+    std::vector<std::thread> writers;
+    for (size_t worker = 0; worker < 8; ++worker) writers.emplace_back([&, worker] {
+      for (size_t i = worker; i < count; i += 8)
+        cache.EnsurePipelineCreated({0, &entries[i], &layouts[i], 10000 + i}, 0, true);
+      ++done;
+    });
+    while (done != 8) { cache.ApplyCompletedPipelineCreations(); std::this_thread::yield(); }
+    for (auto& writer : writers) writer.join();
+    cache.ApplyCompletedPipelineCreations();
+    std::vector<VulkanPipelineCache::Entry*> live;
+    for (size_t i = 0; i < count; ++i) {
+      Ready(cache, entries[i], 10000 + i, &layouts[i], false); live.push_back(&entries[i]);
+    }
+    Check(cache.worker_compiles == count && cache.owner_compiles == 0, "MPSC publication lost or duplicated work");
+    cache.Cleanup(live);
+    std::cout << "PASS MPSC publication: 4096 unique completions from eight workers, exact teardown\n";
+  }
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    constexpr size_t count = 32;
+    auto entries = std::make_unique<VulkanPipelineCache::Entry[]>(count);
+    VulkanPipelineCache::PipelineLayoutProvider layout{6};
+    cache.StartWorkers(2);
+    cache.Enqueue({0, &entries[0], &layout, 20000, false, 15});
+    while (!cache.entered_compiles.load()) std::this_thread::yield();
+    for (size_t i = 1; i < count; ++i)
+      cache.Enqueue({0, &entries[i], &layout, 20000 + i, (i % 7) == 0, 1});
+    cache.EndSubmission();
+    Check(cache.owner_compiles > 0 && cache.worker_compiles > 0, "owner assistance or worker path not exercised");
+    std::vector<VulkanPipelineCache::Entry*> live;
+    for (size_t i = 0; i < count; ++i) {
+      bool failed = i && (i % 7) == 0;
+      Ready(cache, entries[i], failed ? 0 : 20000 + i, failed ? nullptr : &layout, failed);
+      live.push_back(&entries[i]);
+    }
+    Check(cache.pipelines_failed_ == 4, "EndSubmission lost worker failure completions");
+    cache.Cleanup(live);
+    std::cout << "PASS real worker/owner/EndSubmission scheduler: 32 jobs, four failures, no starvation\n";
+  }
+  {
+    ResetGpu(); VulkanPipelineCache cache;
+    VulkanPipelineCache::Entry entry;
+    VulkanPipelineCache::PipelineLayoutProvider layout{7};
+    cache.EnsurePipelineCreated({0, &entry, &layout, 30001}, 1);
+    cache.StartWorkers(1);
+    auto already_entered = cache.entered_compiles.load();
+    cache.Enqueue({0, &entry, &layout, 30002, false, 15});
+    while (cache.entered_compiles == already_entered) std::this_thread::yield();
+    cache.StopWorkers();
+    Ready(cache, entry, 30002, &layout, false);
+    Check(cache.creation_threads_.empty(), "teardown worker still joinable");
+    cache.Cleanup({&entry});
+    std::cout << "PASS real shutdown join/drain ordering: in-flight result applied and reclaimed exactly once\n";
+  }
+  std::cout << "PASS all publication/lifetime integration cases (mock Vulkan and host threads; no PS5 run)\n";
+}

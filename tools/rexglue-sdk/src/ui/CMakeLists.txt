@@ -1,0 +1,217 @@
+# rexui
+
+# Core UI sources
+set(REXUI_CORE_SOURCES
+    graphics_upload_buffer_pool.cpp
+    graphics_util.cpp
+    imgui_dialog.cpp
+    imgui_drawer.cpp
+    immediate_drawer.cpp
+    keybinds.cpp
+    menu_item.cpp
+    presenter.cpp
+    renderdoc_api.cpp
+    window.cpp
+    windowed_app.cpp
+    windowed_app_context.cpp
+)
+
+# Optional overlay dialogs
+set(REXUI_OVERLAY_SOURCES
+    overlay/controls_overlay.cpp
+    overlay/debug_overlay.cpp
+    overlay/console_overlay.cpp
+    overlay/settings_overlay.cpp
+)
+
+# Vulkan UI backend
+set(REXUI_VULKAN_SOURCES
+    vulkan/linked_type_descriptor_set_allocator.cpp
+    vulkan/single_layout_descriptor_set_pool.cpp
+    vulkan/spirv_tools_context.cpp
+    vulkan/ui_samplers.cpp
+    vulkan/vulkan_device.cpp
+    vulkan/vulkan_immediate_drawer.cpp
+    vulkan/vulkan_instance.cpp
+    vulkan/vulkan_mem_alloc.cpp
+    vulkan/vulkan_presenter.cpp
+    vulkan/vulkan_provider.cpp
+    vulkan/vulkan_submission_tracker.cpp
+    vulkan/vulkan_upload_buffer_pool.cpp
+    vulkan/vulkan_util.cpp
+)
+
+# D3D12 UI backend
+if(REXGLUE_USE_D3D12)
+    set(REXUI_D3D12_SOURCES
+        d3d12/d3d12_cpu_descriptor_pool.cpp
+        d3d12/d3d12_descriptor_heap_pool.cpp
+        d3d12/d3d12_immediate_drawer.cpp
+        d3d12/d3d12_presenter.cpp
+        d3d12/d3d12_provider.cpp
+        d3d12/d3d12_submission_tracker.cpp
+        d3d12/d3d12_upload_buffer_pool.cpp
+        d3d12/d3d12_util.cpp
+    )
+endif()
+
+# Native Direct3D 11 presentation
+if(REXGLUE_USE_D3D11)
+    set(REXUI_D3D11_SOURCES
+        d3d11/d3d11_device.cpp
+        d3d11/d3d11_image_renderer.cpp
+        d3d11/d3d11_immediate_drawer.cpp
+        d3d11/d3d11_presenter.cpp
+        d3d11/d3d11_provider.cpp
+        d3d11/d3d11_swap_chain.cpp
+    )
+endif()
+
+# Platform-specific sources
+if(REXGLUE_PLATFORM_PROSPERO)
+    set(REXUI_PLATFORM_SOURCES
+        prospero_paths.cpp
+        surface_prospero.cpp
+        window_prospero.cpp
+        windowed_app_context_prospero.cpp
+        overlay/settings_prospero.cpp
+    )
+    list(APPEND REXUI_VULKAN_SOURCES
+        vulkan/vulkan_display_prospero.cpp
+        vulkan/vulkan_framegen_prospero.cpp
+        vulkan/framegen/vulkan_adapter.cpp
+        vulkan/framegen/lossless_dll.cpp
+        vulkan/framegen/lsfg_translate.cpp
+        vulkan/framegen/lsfg_shaders.cpp
+        vulkan/framegen/frame_gen_pacer.cpp
+        vulkan/framegen/lsfg_common.cpp
+        vulkan/framegen/lsfg_alpha.cpp
+        vulkan/framegen/lsfg_beta.cpp
+        vulkan/framegen/lsfg_chain.cpp
+        vulkan/framegen/lsfg_delta.cpp
+        vulkan/framegen/lsfg_gamma.cpp
+        vulkan/framegen/lsfg_generate.cpp
+        vulkan/framegen/lsfg_mipmaps.cpp
+    )
+elseif(WIN32)
+    set(REXUI_PLATFORM_SOURCES
+        surface_win.cpp
+        window_win.cpp
+        windowed_app_context_win.cpp
+    )
+else()
+    set(REXUI_PLATFORM_SOURCES
+        surface_gnulinux.cpp
+        window_gtk.cpp
+        windowed_app_context_gtk.cpp
+    )
+endif()
+
+# Combine sources
+set(REXUI_SOURCES
+    ${REXUI_CORE_SOURCES}
+    ${REXUI_OVERLAY_SOURCES}
+    ${REXUI_PLATFORM_SOURCES}
+)
+
+if(REXGLUE_USE_VULKAN)
+    list(APPEND REXUI_SOURCES ${REXUI_VULKAN_SOURCES})
+endif()
+
+if(REXGLUE_USE_D3D12)
+    list(APPEND REXUI_SOURCES ${REXUI_D3D12_SOURCES})
+endif()
+
+if(REXGLUE_USE_D3D11)
+    list(APPEND REXUI_SOURCES ${REXUI_D3D11_SOURCES})
+endif()
+
+add_library(rexui OBJECT ${REXUI_SOURCES})
+add_library(rex::ui ALIAS rexui)
+
+target_include_directories(rexui PUBLIC
+    $<BUILD_INTERFACE:${REXGLUE_ROOT}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_include_directories(rexui PRIVATE
+    ${REXGLUE_ROOT}/src  # For ui/shaders/bytecode includes
+)
+
+target_link_libraries(rexui PUBLIC
+    rexcore
+    renderdoc
+    imgui::imgui
+)
+
+if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include")
+    target_include_directories(rexui PRIVATE
+        "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include"
+        "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
+    )
+endif()
+
+set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)
+if(TARGET amd_fidelityfx_vk)
+    target_link_libraries(rexui PRIVATE amd_fidelityfx_vk)
+    set(REXUI_HAS_FIDELITYFX_RUNTIME ON)
+endif()
+if(TARGET amd_fidelityfx_dx12)
+    target_link_libraries(rexui PRIVATE amd_fidelityfx_dx12)
+    set(REXUI_HAS_FIDELITYFX_RUNTIME ON)
+endif()
+if(REXUI_HAS_FIDELITYFX_RUNTIME)
+    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_RUNTIME=1)
+endif()
+
+if(REXGLUE_USE_VULKAN)
+    target_link_libraries(rexui PUBLIC
+        volk::volk
+        GPUOpen::VulkanMemoryAllocator
+        SPIRV-Tools-static
+    )
+endif()
+
+# Platform-specific dependencies
+if(REXGLUE_PLATFORM_PROSPERO)
+    # Native scePad input and VK_KHR_display presentation: no GTK or X11.
+    # The LSFG validator inspects SPIR-V opcodes directly. SPIRV-Tools does
+    # not publish its private SPIRV-Headers include directory to consumers.
+    target_link_libraries(rexui PRIVATE SPIRV-Headers::SPIRV-Headers)
+elseif(WIN32)
+    target_link_libraries(rexui PUBLIC
+        dwmapi
+        shcore
+    )
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+    pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+    # XInput 2 raw mouse motion while the mouse is captured (libXi is a GTK 3
+    # dependency, so it's present wherever GTK 3 is).
+    pkg_check_modules(XI REQUIRED xi)
+
+    target_include_directories(rexui PRIVATE
+        ${GTK3_INCLUDE_DIRS}
+        ${X11_XCB_INCLUDE_DIRS}
+    )
+    target_link_libraries(rexui PUBLIC
+        ${GTK3_LIBRARIES}
+        ${X11_XCB_LIBRARIES}
+        ${XI_LIBRARIES}
+    )
+endif()
+
+# D3D12 backend dependencies
+if(REXGLUE_USE_D3D12)
+    target_link_libraries(rexui PUBLIC
+        dxgi
+        dxguid
+        dxc-headers
+    )
+endif()
+
+
+
+if(REXGLUE_USE_D3D11)
+    target_link_libraries(rexui PUBLIC d3d11 dxgi d3dcompiler dxguid)
+endif()

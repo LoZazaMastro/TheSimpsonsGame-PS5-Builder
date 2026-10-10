@@ -1,0 +1,155 @@
+{
+  "status": "PASS",
+  "production_asset": "prospero/sce_sys/snd0.at9",
+  "gain_db": -1.0,
+  "gain_linear": 0.8912509381337456,
+  "original_sha256": "beee975236b28a694e43161bb7e3102b56e6f8db3ef436a5c3ae904241f1248d",
+  "final_sha256": "edc5400d3cb9ff0ba95953128294101a299861116f2513363bd4e8316e893dd4",
+  "original_asset_backup": "prospero/tests/fixtures/home_audio/original.at9",
+  "candidate_asset": "prospero/tests/fixtures/home_audio/minus-1db.at9",
+  "format_validation": {
+    "status": "PASS",
+    "before": {
+      "bytes": 1804200,
+      "samples": 4810432,
+      "rate": 48000,
+      "seconds": 100.21733333333333,
+      "bitrate": 144000,
+      "loop_start": 256,
+      "loop_end_inclusive": 4810687
+    },
+    "after": {
+      "bytes": 1804200,
+      "samples": 4810432,
+      "rate": 48000,
+      "seconds": 100.21733333333333,
+      "bitrate": 144000,
+      "loop_start": 256,
+      "loop_end_inclusive": 4810687
+    },
+    "all_non_audio_riff_chunks_byte_identical": true,
+    "codec": "ATRAC9",
+    "channels": 2,
+    "sample_rate": 48000,
+    "loop_preserved": true,
+    "sonic_validate_assets": "PASS"
+  },
+  "master_match": {
+    "status": "PASS",
+    "master": "prospero/assets/source/menu-music.mp3",
+    "master_sha256": "4b751f7abe3b90653fd79ae1eb4c5d459374475c44f2648057ada77ee1adc6b8",
+    "prior_gain_linear": 0.5,
+    "total_gain_linear_from_master": 0.4456254690668728,
+    "total_gain_db_from_master": -7.020599913279624,
+    "original_reencoded_asset": "prospero/tests/fixtures/home_audio/reencoded.at9",
+    "original_reencoded_sha256": "beee975236b28a694e43161bb7e3102b56e6f8db3ef436a5c3ae904241f1248d",
+    "original_reencoded_byte_identical": true,
+    "baseline_pcm_sha256": "b1081a67da494f181f05b1175d1d4a540889d674c6d218b07becb5be5f71e000",
+    "new_pcm_sha256": "e9a1a0f3fae94de58fb5b5af18ce98a2f111b9da4396061a927ad4688f459922",
+    "no_atrac9_to_atrac9_generation": true,
+    "previous_gain_verification": {
+      "gain_linear": 0.5,
+      "gain_db": -6.020599913279624,
+      "samples_per_channel": 4810432,
+      "channels": 2,
+      "rate": 48000,
+      "all_float_samples_exact_gain": true,
+      "rms_gain_ratio": 0.5,
+      "source_float_peak": 1.1544219255447388,
+      "reduced_float_peak": 0.5772109627723694,
+      "pcm16_peak": 0.57720947265625,
+      "pcm16_max_quantization_error_lsb": 0.5,
+      "pcm16_saturation": false
+    }
+  },
+  "pcm_gain": {
+    "status": "PASS",
+    "samples_per_channel": 4810432,
+    "channels": 2,
+    "all_float_samples_exact_gain": true,
+    "before_float": {
+      "rms": 0.10508594730071857,
+      "rms_dbfs": -19.56910712906416,
+      "peak": 0.5772109627723694,
+      "peak_dbfs": -4.773308581843446
+    },
+    "after_float": {
+      "rms": 0.09365794911643878,
+      "rms_dbfs": -20.569107129064157,
+      "peak": 0.5144398120719567,
+      "peak_dbfs": -5.773308581843447
+    },
+    "float_rms_gain_db": -0.9999999999999964,
+    "before_pcm16": {
+      "rms": 0.105085947922752,
+      "rms_dbfs": -19.569107077649925,
+      "peak": 0.57720947265625,
+      "peak_dbfs": -4.773331005188986
+    },
+    "after_pcm16": {
+      "rms": 0.09365795455808232,
+      "rms_dbfs": -20.569106624403165,
+      "peak": 0.514434814453125,
+      "peak_dbfs": -5.773392962903113
+    },
+    "pcm16_rms_gain_db": -0.9999995467532408,
+    "pcm16_max_quantization_error_lsb": 0.49999995893767846,
+    "saturation": false,
+    "additional_normalization_limiter_or_fades": false
+  },
+  "decoded_measurement": {
+    "status": "PASS",
+    "decoder": "Pinned Sonic reference libatrac9, all frames decoded with status0",
+    "before_validation": {
+      "status": "PASS",
+      "errors": 0,
+      "frames": 18792,
+      "superframes": 4698,
+      "channels": 2,
+      "sample_rate": 48000,
+      "samples_per_channel": 4810432,
+      "encoder_delay_removed_samples": 256,
+      "alignment": "Both streams trimmed by the identical fact/smpl encoder delay and sample count."
+    },
+    "after_validation": {
+      "status": "PASS",
+      "errors": 0,
+      "frames": 18792,
+      "superframes": 4698,
+      "channels": 2,
+      "sample_rate": 48000,
+      "samples_per_channel": 4810432,
+      "encoder_delay_removed_samples": 256,
+      "alignment": "Both streams trimmed by the identical fact/smpl encoder delay and sample count."
+    },
+    "samples_per_channel": 4810432,
+    "channels": 2,
+    "before": {
+      "rms": 0.10505870641919067,
+      "rms_dbfs": -19.571359018776622,
+      "peak": 0.6112060546875,
+      "peak_dbfs": -4.276247044656928
+    },
+    "after": {
+      "rms": 0.09363469055253022,
+      "rms_dbfs": -20.57126440892999,
+      "peak": 0.5211181640625,
+      "peak_dbfs": -5.661275776556175
+    },
+    "rms_gain_db": -0.9999053901533692,
+    "peak_gain_db": -1.3850287318992471,
+    "rms_gain_tolerance_db": 0.03,
+    "saturation": false,
+    "note": "ATRAC9 is lossy; decoded samples and peaks need not be an exact scaled copy. Float input gain is verified exactly."
+  },
+  "current_recipe_validation": {
+    "status": "PASS",
+    "path": "prospero/prepare_assets.py",
+    "sha256": "d561398b769c8b356904c8ca98f8ef53d7714643c9c1f011c5ef49b3f6886f4f",
+    "direct_master_gain_linear": 0.4456254690668728,
+    "pcm16_sha256": "e9a1a0f3fae94de58fb5b5af18ce98a2f111b9da4396061a927ad4688f459922",
+    "pcm16_byte_identical_to_encoded_input": true,
+    "gain_verification_sha256": "476d2e087038053016bc3c61eb73688716660b95f825fde44e2c41d05d398e42",
+    "assets_manifest_sha256": "ead2c1fdd0bef696363652bfb88969236a139dcbf6bcc2ae59ccafc9a01f6cf7"
+  }
+}

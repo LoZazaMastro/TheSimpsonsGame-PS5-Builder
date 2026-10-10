@@ -1,0 +1,52 @@
+// Compiles actual shader-string generators with the actual system-constant
+// layout. The runner compiles/validates every emitted module using glslang and
+// spirv-val. It does not pretend to execute the resulting shaders on PS5.
+#include <algorithm>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <fmt/format.h>
+#include <rex/graphics/pipeline/shader/spirv_translator.h>
+#define REXCVAR_GET(name) flag_##name
+double flag_color_saturation = 1.0, flag_color_vibrance = 0.0;
+double flag_color_contrast = 1.0, flag_color_brightness = 0.0;
+namespace rex::graphics::vulkan {
+@TESS_HELPERS@
+@COLOR_HELPERS@
+}
+int main(int argc, char** argv) {
+  if (argc != 2) return 2;
+  namespace fs = std::filesystem;
+  const fs::path output(argv[1]);
+  fs::create_directories(output);
+  using namespace rex::graphics::vulkan;
+  auto write = [&](const std::string& name, const std::string& source) {
+    std::ofstream file(output / name, std::ios::binary);
+    file << source; file.close();
+    if (!file) throw std::runtime_error("cannot write shader output");
+  };
+  for (uint32_t count : {3u, 16u}) {
+    for (uint32_t level : {1u, 2u, 3u}) {
+      write(fmt::format("tess-{}-{}.tesc", count, level),
+            GetSmoothTessellationControlShaderGlsl(count, 1, level));
+    }
+    write(fmt::format("tess-{}.tese", count),
+          GetSmoothTessellationEvaluationShaderGlsl(count, 2, 1, 0, 12, 15));
+  }
+  for (bool grade : {false, true}) {
+    // Non-neutral values exercise the four upstream shader constants together.
+    flag_color_saturation = grade ? 1.2 : 1.0;
+    flag_color_vibrance = grade ? 0.3 : 0.0;
+    flag_color_contrast = grade ? 1.1 : 1.0;
+    flag_color_brightness = grade ? -0.1 : 0.0;
+    if (IsSwapColorGradeEnabled() != grade) return 3;
+    for (bool extreme : {false, true}) {
+      write(fmt::format("fxaa-grade{}-extreme{}.comp", grade, extreme),
+            WithSwapColorGrade(GetSwapFxaaComputeSource(extreme)));
+    }
+    write(fmt::format("grade{}.comp", grade),
+          WithSwapColorGrade(GetSwapColorGradeComputeSource()));
+  }
+  return 0;
+}

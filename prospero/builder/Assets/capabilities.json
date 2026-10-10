@@ -1,0 +1,885 @@
+{
+  "schemaVersion": 1,
+  "titleId": "PPSA74207",
+  "gameTitle": "The Simpsons Game",
+  "buildVersion": "3.10",
+  "groups": [
+    {
+      "id": "display",
+      "label": "Display",
+      "labelIt": "Schermo",
+      "description": ""
+    },
+    {
+      "id": "quality",
+      "label": "Graphics quality",
+      "labelIt": "Qualità grafica",
+      "description": ""
+    },
+    {
+      "id": "ink",
+      "label": "Ink outlines",
+      "labelIt": "Contorni",
+      "description": ""
+    },
+    {
+      "id": "color",
+      "label": "Colour",
+      "labelIt": "Colore",
+      "description": ""
+    },
+    {
+      "id": "framerate",
+      "label": "Frame rate",
+      "labelIt": "Frequenza fotogrammi",
+      "description": ""
+    },
+    {
+      "id": "language",
+      "label": "Language",
+      "labelIt": "Lingua",
+      "description": ""
+    },
+    {
+      "id": "framegen",
+      "label": "Experimental frame generation",
+      "labelIt": "Generazione fotogrammi sperimentale",
+      "description": "Optional generated frames. Requires your local Lossless.dll.",
+      "descriptionIt": "Fotogrammi aggiuntivi facoltativi. Richiede il tuo file Lossless.dll.",
+      "requiresFile": "lossless.dll"
+    },
+    {
+      "id": "game",
+      "label": "Game",
+      "labelIt": "Gioco",
+      "description": ""
+    },
+    {
+      "id": "audio",
+      "label": "Audio",
+      "labelIt": "Audio",
+      "description": ""
+    }
+  ],
+  "settings": [
+    {
+      "key": "resolution",
+      "label": "Game video mode",
+      "labelIt": "Modalità video del gioco",
+      "group": "display",
+      "type": "choice",
+      "default": "4k",
+      "applyMode": "restart",
+      "description": "Guest video mode. Render resolution is set separately.",
+      "descriptionIt": "Modalità video del gioco. La risoluzione di rendering si imposta separatamente.",
+      "status": "experimental",
+      "choices": [
+        {
+          "value": "",
+          "label": "Automatic",
+          "labelIt": "Automatica"
+        },
+        {
+          "value": "720p",
+          "label": "720p",
+          "labelIt": "720p"
+        },
+        {
+          "value": "1080p",
+          "label": "1080p",
+          "labelIt": "1080p"
+        },
+        {
+          "value": "1440p",
+          "label": "1440p",
+          "labelIt": "1440p"
+        },
+        {
+          "value": "4k",
+          "label": "4K",
+          "labelIt": "4K"
+        }
+      ]
+    },
+    {
+      "key": "prospero_output_hz",
+      "label": "Output refresh rate",
+      "labelIt": "Frequenza di uscita",
+      "group": "display",
+      "type": "choice",
+      "default": 120,
+      "applyMode": "restart",
+      "description": "120 Hz requires a compatible display and connection. If unavailable, the output keeps a supported mode. Native gameplay remains at 30 or 60 FPS.",
+      "descriptionIt": "120 Hz richiede uno schermo e un collegamento compatibili. Se non disponibile viene mantenuta una modalita supportata. Il gioco nativo resta a 30 o 60 FPS.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 60,
+          "label": "60 Hz"
+        },
+        {
+          "value": 120,
+          "label": "120 Hz",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "vsync",
+      "label": "Vertical synchronization",
+      "labelIt": "Sincronizzazione verticale",
+      "group": "display",
+      "type": "choice",
+      "default": false,
+      "applyMode": "live",
+      "description": "Adjusts game synchronization immediately. The selected display refresh rate stays unchanged.",
+      "descriptionIt": "Regola subito la sincronizzazione del gioco. La frequenza di uscita selezionata resta invariata.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": true,
+          "label": "On",
+          "labelIt": "Attiva"
+        },
+        {
+          "value": false,
+          "label": "Off",
+          "labelIt": "Disattivata",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "present_letterbox",
+      "label": "Preserve aspect ratio",
+      "labelIt": "Mantieni proporzioni",
+      "group": "display",
+      "type": "boolean",
+      "default": true,
+      "applyMode": "live",
+      "description": "Add borders when needed instead of stretching the image.",
+      "descriptionIt": "Aggiunge bordi quando servono per conservare le proporzioni dell'immagine.",
+      "status": "supported"
+    },
+    {
+      "key": "resolution_scale",
+      "label": "Render resolution",
+      "labelIt": "Risoluzione di rendering",
+      "group": "quality",
+      "type": "choice",
+      "default": 3,
+      "applyMode": "restart",
+      "description": "Scales the 1280 × 720 render targets. Higher values require more GPU memory and processing.",
+      "descriptionIt": "Scala i render target da 1280 × 720. Valori maggiori richiedono più memoria e lavoro alla GPU.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 1,
+          "label": "1× - 720p",
+          "labelIt": "1× - 720p"
+        },
+        {
+          "value": 2,
+          "label": "2× - 1440p",
+          "labelIt": "2× - 1440p"
+        },
+        {
+          "value": 3,
+          "label": "3× - 4K",
+          "labelIt": "3× - 4K"
+        }
+      ]
+    },
+    {
+      "key": "native_rt_original_resolution_targets",
+      "label": "Shadow resolution",
+      "labelIt": "Risoluzione delle ombre",
+      "group": "quality",
+      "type": "choice",
+      "default": "",
+      "applyMode": "restart",
+      "description": "Choose whether shadow targets follow the render scale.",
+      "descriptionIt": "Scegli se le ombre seguono la scala di rendering.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": "",
+          "label": "Match render resolution",
+          "labelIt": "Come il rendering"
+        },
+        {
+          "value": "832:13",
+          "label": "Original game resolution",
+          "labelIt": "Risoluzione originale",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "present_effect",
+      "label": "Upscaling filter",
+      "labelIt": "Filtro di upscaling",
+      "group": "quality",
+      "type": "choice",
+      "default": "fsr",
+      "applyMode": "live",
+      "description": "Bilinear preserves the v3.9 profile. FSR 1 and CAS are optional experimental filters, without frame generation.",
+      "descriptionIt": "Bilineare mantiene il profilo v3.9. FSR 1 e CAS sono filtri sperimentali facoltativi, senza generazione di fotogrammi.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": "bilinear",
+          "label": "Bilinear",
+          "labelIt": "Bilineare"
+        },
+        {
+          "value": "fsr",
+          "label": "AMD FSR 1",
+          "labelIt": "AMD FSR 1",
+          "status": "experimental"
+        },
+        {
+          "value": "cas",
+          "label": "AMD CAS",
+          "labelIt": "AMD CAS",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "present_fsr_sharpness_reduction",
+      "label": "FSR sharpening",
+      "labelIt": "Nitidezza FSR",
+      "group": "quality",
+      "type": "choice",
+      "default": 0.0,
+      "applyMode": "live",
+      "description": "Controls FSR 1 sharpening.",
+      "descriptionIt": "Regola la nitidezza di FSR 1.",
+      "status": "experimental",
+      "choices": [
+        {
+          "value": 0.0,
+          "label": "Strong",
+          "labelIt": "Forte"
+        },
+        {
+          "value": 0.2,
+          "label": "Normal",
+          "labelIt": "Normale"
+        },
+        {
+          "value": 0.5,
+          "label": "Soft",
+          "labelIt": "Morbida"
+        },
+        {
+          "value": 1.0,
+          "label": "Very soft",
+          "labelIt": "Molto morbida"
+        }
+      ],
+      "requires": {
+        "key": "present_effect",
+        "value": "fsr"
+      }
+    },
+    {
+      "key": "swap_post_effect",
+      "label": "Anti-aliasing",
+      "labelIt": "Anti-aliasing",
+      "group": "quality",
+      "type": "choice",
+      "default": "fxaa",
+      "applyMode": "live",
+      "description": "FXAA smooths edges. Extreme also processes the HUD and may soften text.",
+      "descriptionIt": "FXAA ammorbidisce i bordi. Extreme elabora anche l'interfaccia e può rendere le scritte meno nitide.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": "none",
+          "label": "Off",
+          "labelIt": "Disattivato"
+        },
+        {
+          "value": "fxaa",
+          "label": "FXAA",
+          "labelIt": "FXAA",
+          "status": "experimental"
+        },
+        {
+          "value": "fxaa_extreme",
+          "label": "FXAA Extreme",
+          "labelIt": "FXAA Extreme",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "eye_shading",
+      "label": "Characters' eyes",
+      "labelIt": "Occhi dei personaggi",
+      "group": "quality",
+      "type": "choice",
+      "default": "clean",
+      "applyMode": "restart",
+      "description": "Original keeps the validated appearance. Clean removes the extra eye shading.",
+      "descriptionIt": "Originale mantiene l'aspetto verificato. Puliti rimuove l'ombreggiatura aggiuntiva degli occhi.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": "original",
+          "label": "Original",
+          "labelIt": "Originali"
+        },
+        {
+          "value": "clean",
+          "label": "Clean",
+          "labelIt": "Puliti",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "anisotropic_override",
+      "label": "Texture filtering",
+      "labelIt": "Filtro anisotropico",
+      "group": "quality",
+      "type": "choice",
+      "default": 5,
+      "applyMode": "live",
+      "description": "Improves texture detail at oblique angles.",
+      "descriptionIt": "Migliora i dettagli delle texture viste di sbieco.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Off",
+          "labelIt": "Disattivato"
+        },
+        {
+          "value": 2,
+          "label": "2×",
+          "labelIt": "2×"
+        },
+        {
+          "value": 3,
+          "label": "4×",
+          "labelIt": "4×"
+        },
+        {
+          "value": 4,
+          "label": "8×",
+          "labelIt": "8×"
+        },
+        {
+          "value": 5,
+          "label": "16×",
+          "labelIt": "16×"
+        }
+      ]
+    },
+    {
+      "key": "character_tessellation",
+      "label": "Character smoothing",
+      "labelIt": "Levigatura personaggi",
+      "group": "quality",
+      "type": "choice",
+      "default": "off",
+      "applyMode": "restart",
+      "description": "Experimental tessellation smooths character silhouettes. Requires supported GPU shader stages; otherwise it stays off.",
+      "descriptionIt": "La tessellazione sperimentale leviga i contorni dei personaggi. Se gli stadi shader necessari non sono disponibili resta disattivata.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": "off",
+          "label": "Off",
+          "labelIt": "Disattivata"
+        },
+        {
+          "value": "low",
+          "label": "Low",
+          "labelIt": "Bassa",
+          "status": "experimental"
+        },
+        {
+          "value": "medium",
+          "label": "Medium",
+          "labelIt": "Media",
+          "status": "experimental"
+        },
+        {
+          "value": "high",
+          "label": "High",
+          "labelIt": "Alta",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "ink_outlines",
+      "label": "Outlines",
+      "labelIt": "Contorni",
+      "group": "ink",
+      "type": "choice",
+      "default": "original",
+      "applyMode": "restart",
+      "description": "Original keeps the game's hard ink lines. Soft uses anti-aliased ink.",
+      "descriptionIt": "Originali mantiene le linee nette del gioco. Morbidi applica l'anti-aliasing ai contorni.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": "original",
+          "label": "Original",
+          "labelIt": "Originali"
+        },
+        {
+          "value": "soft",
+          "label": "Soft",
+          "labelIt": "Morbidi",
+          "status": "experimental"
+        },
+        {
+          "value": "off",
+          "label": "Off",
+          "labelIt": "Disattivati",
+          "status": "experimental"
+        }
+      ]
+    },
+    {
+      "key": "ink_outline_strength",
+      "label": "Soft line strength",
+      "labelIt": "Intensità contorni morbidi",
+      "group": "ink",
+      "type": "number",
+      "default": 0.6,
+      "applyMode": "restart",
+      "description": "Opacity of the soft outlines.",
+      "descriptionIt": "Opacità dei contorni morbidi.",
+      "status": "experimental",
+      "min": 0.1,
+      "max": 1.0,
+      "step": 0.05,
+      "requires": {
+        "key": "ink_outlines",
+        "value": "soft"
+      }
+    },
+    {
+      "key": "ink_outline_color",
+      "label": "Outline colour",
+      "labelIt": "Colore dei contorni",
+      "group": "ink",
+      "type": "color",
+      "default": "000000",
+      "applyMode": "restart",
+      "description": "Choose the ink colour. Black is the original colour.",
+      "descriptionIt": "Scegli il colore dei contorni. Il nero è il colore originale.",
+      "status": "supported"
+    },
+    {
+      "key": "color_vibrance",
+      "label": "Vibrance",
+      "labelIt": "Vividezza",
+      "group": "color",
+      "type": "number",
+      "default": 0.0,
+      "applyMode": "live",
+      "description": "Experimental selective colour boost. Zero preserves the original colour.",
+      "descriptionIt": "Regolazione selettiva sperimentale dei colori. Zero conserva il colore originale.",
+      "status": "experimental",
+      "min": -0.5,
+      "max": 1.0,
+      "step": 0.05
+    },
+    {
+      "key": "color_saturation",
+      "label": "Saturation",
+      "labelIt": "Saturazione",
+      "group": "color",
+      "type": "number",
+      "default": 1.0,
+      "applyMode": "live",
+      "description": "Experimental overall colour intensity. One preserves the original colour.",
+      "descriptionIt": "Intensità complessiva sperimentale dei colori. Uno conserva il colore originale.",
+      "status": "experimental",
+      "min": 0.0,
+      "max": 2.0,
+      "step": 0.05
+    },
+    {
+      "key": "color_contrast",
+      "label": "Contrast",
+      "labelIt": "Contrasto",
+      "group": "color",
+      "type": "number",
+      "default": 1.0,
+      "applyMode": "live",
+      "description": "Experimental contrast around middle grey. One preserves the original contrast.",
+      "descriptionIt": "Contrasto sperimentale attorno al grigio medio. Uno conserva il contrasto originale.",
+      "status": "experimental",
+      "min": 0.8,
+      "max": 1.2,
+      "step": 0.01
+    },
+    {
+      "key": "color_brightness",
+      "label": "Brightness",
+      "labelIt": "Luminosità",
+      "group": "color",
+      "type": "number",
+      "default": 0.0,
+      "applyMode": "live",
+      "description": "Experimental brightness offset. Zero preserves the original brightness.",
+      "descriptionIt": "Correzione sperimentale della luminosità. Zero conserva la luminosità originale.",
+      "status": "experimental",
+      "min": -0.1,
+      "max": 0.1,
+      "step": 0.01
+    },
+    {
+      "key": "frame_rate",
+      "label": "Gameplay FPS target",
+      "labelIt": "Obiettivo FPS nel gioco",
+      "group": "framerate",
+      "type": "choice",
+      "default": 60,
+      "applyMode": "live",
+      "description": "Choose 30 or 60 FPS. Other native frame rates are not supported.",
+      "descriptionIt": "Scegli 30 o 60 FPS. Altre frequenze native non sono supportate.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 30,
+          "label": "30 FPS",
+          "labelIt": "30 FPS"
+        },
+        {
+          "value": 60,
+          "label": "60 FPS",
+          "labelIt": "60 FPS"
+        }
+      ]
+    },
+    {
+      "key": "menu_frame_rate",
+      "label": "Menu FPS target",
+      "labelIt": "Obiettivo FPS nei menu",
+      "group": "framerate",
+      "type": "choice",
+      "default": 30,
+      "applyMode": "live",
+      "description": "Controls menu drawing at 30 or 60 FPS; menu animations retain their original timing.",
+      "descriptionIt": "Regola il disegno dei menu a 30 o 60 FPS; le animazioni mantengono i tempi originali.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 30,
+          "label": "30 FPS",
+          "labelIt": "30 FPS"
+        },
+        {
+          "value": 60,
+          "label": "60 FPS",
+          "labelIt": "60 FPS"
+        }
+      ]
+    },
+    {
+      "key": "user_language",
+      "label": "Game language",
+      "labelIt": "Lingua del gioco",
+      "group": "language",
+      "type": "choice",
+      "default": 1,
+      "applyMode": "restart",
+      "description": "The selected language must be included in your game data.",
+      "descriptionIt": "La lingua scelta deve essere presente nei dati del tuo gioco.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 1,
+          "label": "English",
+          "labelIt": "Inglese"
+        },
+        {
+          "value": 2,
+          "label": "Japanese",
+          "labelIt": "Giapponese"
+        },
+        {
+          "value": 3,
+          "label": "German",
+          "labelIt": "Tedesco"
+        },
+        {
+          "value": 4,
+          "label": "French",
+          "labelIt": "Francese"
+        },
+        {
+          "value": 5,
+          "label": "Spanish",
+          "labelIt": "Spagnolo"
+        },
+        {
+          "value": 6,
+          "label": "Italian",
+          "labelIt": "Italiano"
+        }
+      ]
+    },
+    {
+      "key": "subtitles",
+      "label": "Always show subtitles",
+      "labelIt": "Mostra sempre i sottotitoli",
+      "group": "game",
+      "type": "boolean",
+      "default": false,
+      "applyMode": "live",
+      "description": "Overrides the in-game subtitle option, including the first cutscene. Disabling restores the game's own choice.",
+      "descriptionIt": "Attiva i sottotitoli anche nel filmato iniziale. Disattivando si torna alla scelta del gioco.",
+      "status": "supported"
+    },
+    {
+      "key": "audio_mute",
+      "label": "Mute game audio",
+      "labelIt": "Disattiva audio del gioco",
+      "group": "audio",
+      "type": "boolean",
+      "default": false,
+      "applyMode": "live",
+      "description": "Mutes the game output without changing PS5 home music.",
+      "descriptionIt": "Disattiva l'audio del gioco senza cambiare la musica della home PS5.",
+      "status": "supported"
+    },
+    {
+      "key": "audio_maxqframes",
+      "label": "Audio buffer",
+      "labelIt": "Buffer audio",
+      "group": "audio",
+      "type": "choice",
+      "default": 8,
+      "applyMode": "restart",
+      "description": "Small buffers reduce latency; large buffers tolerate more scheduling delays.",
+      "descriptionIt": "Un buffer ridotto diminuisce la latenza; uno maggiore tollera più ritardi dei thread.",
+      "status": "supported",
+      "choices": [
+        {
+          "value": 8,
+          "label": "Default - 8",
+          "labelIt": "Predefinito - 8"
+        },
+        {
+          "value": 16,
+          "label": "16"
+        },
+        {
+          "value": 32,
+          "label": "32"
+        },
+        {
+          "value": 64,
+          "label": "Relaxed - 64",
+          "labelIt": "Ampio - 64"
+        }
+      ]
+    },
+    {
+      "key": "frame_gen",
+      "label": "Frame generation",
+      "labelIt": "Generazione fotogrammi",
+      "type": "boolean",
+      "default": true,
+      "description": "Experimental generated frames without changing the native game speed. If initialization fails, standard rendering continues.",
+      "descriptionIt": "Fotogrammi generati sperimentali senza cambiare la velocita del gioco nativo. Se l'inizializzazione fallisce continua il rendering normale.",
+      "hint": "In game: press L1 + R1 + L3 + R3 to turn frame generation on or off for this session. Release all four buttons before pressing again. The saved startup setting stays unchanged.",
+      "group": "framegen",
+      "applyMode": "live",
+      "status": "experimental"
+    },
+    {
+      "key": "frame_gen_target_rate",
+      "label": "Generated frame target",
+      "labelIt": "Obiettivo fotogrammi generati",
+      "type": "choice",
+      "default": 120,
+      "description": "Auto uses the multiplier. The effective display refresh rate limits the presented frame rate.",
+      "descriptionIt": "Automatico usa il moltiplicatore. La frequenza effettiva dello schermo limita i fotogrammi mostrati.",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Auto",
+          "labelIt": "Automatico"
+        },
+        {
+          "value": 60,
+          "label": "60 FPS"
+        },
+        {
+          "value": 120,
+          "label": "120 FPS"
+        }
+      ],
+      "group": "framegen",
+      "applyMode": "restart",
+      "status": "experimental"
+    },
+    {
+      "key": "frame_gen_multiplier",
+      "label": "Frame multiplier",
+      "labelIt": "Moltiplicatore fotogrammi",
+      "type": "choice",
+      "default": 2,
+      "description": "Used when the generated frame target is Auto. The output is limited by the active display mode.",
+      "descriptionIt": "Usato quando l'obiettivo dei fotogrammi generati e Automatico. L'uscita e limitata dalla modalita dello schermo attiva.",
+      "choices": [
+        {
+          "value": 2,
+          "label": "2×"
+        },
+        {
+          "value": 3,
+          "label": "3×"
+        },
+        {
+          "value": 4,
+          "label": "4×"
+        }
+      ],
+      "group": "framegen",
+      "applyMode": "restart",
+      "status": "experimental"
+    }
+  ],
+  "presets": [
+    {
+      "id": "color_original",
+      "label": "Original",
+      "labelIt": "Originale",
+      "group": "color",
+      "values": {
+        "color_vibrance": 0,
+        "color_saturation": 1,
+        "color_contrast": 1,
+        "color_brightness": 0
+      }
+    },
+    {
+      "id": "color_vivid",
+      "label": "Vivid",
+      "labelIt": "Vivido",
+      "group": "color",
+      "values": {
+        "color_vibrance": 0.35,
+        "color_saturation": 1.1,
+        "color_contrast": 1.05,
+        "color_brightness": 0
+      }
+    },
+    {
+      "id": "color_punchy",
+      "label": "Punchy",
+      "labelIt": "Intenso",
+      "group": "color",
+      "values": {
+        "color_vibrance": 0.5,
+        "color_saturation": 1.15,
+        "color_contrast": 1.1,
+        "color_brightness": 0
+      }
+    },
+    {
+      "id": "color_soft",
+      "label": "Soft",
+      "labelIt": "Morbido",
+      "group": "color",
+      "values": {
+        "color_vibrance": -0.1,
+        "color_saturation": 0.95,
+        "color_contrast": 0.95,
+        "color_brightness": 0.02
+      }
+    },
+    {
+      "id": "ink_black",
+      "label": "Black",
+      "labelIt": "Nero",
+      "group": "ink",
+      "values": {
+        "ink_outline_color": "000000"
+      }
+    },
+    {
+      "id": "ink_grey",
+      "label": "Dark grey",
+      "labelIt": "Grigio scuro",
+      "group": "ink",
+      "values": {
+        "ink_outline_color": "3C3C3C"
+      }
+    },
+    {
+      "id": "ink_brown",
+      "label": "Dark brown",
+      "labelIt": "Marrone scuro",
+      "group": "ink",
+      "values": {
+        "ink_outline_color": "46281A"
+      }
+    },
+    {
+      "id": "ink_blue",
+      "label": "Dark blue",
+      "labelIt": "Blu scuro",
+      "group": "ink",
+      "values": {
+        "ink_outline_color": "0F1E50"
+      }
+    },
+    {
+      "id": "ink_red",
+      "label": "Dark red",
+      "labelIt": "Rosso scuro",
+      "group": "ink",
+      "values": {
+        "ink_outline_color": "5A0F0F"
+      }
+    }
+  ],
+  "lockedSettings": {
+    "prospero_profile_version": 34,
+    "fullscreen": true,
+    "gpu": "vulkan",
+    "render_target_path_vulkan": "native",
+    "vulkan_device": -1,
+    "vulkan_allow_present_mode_immediate": false,
+    "vulkan_allow_present_mode_fifo_relaxed": false,
+    "gpu_memory_mirror_on_demand": false,
+    "native_resolve_surface_aliases": false,
+    "native_resolve_fresh_initial": false,
+    "native_resolve_composed_reads": false
+  },
+  "fixedFeatures": [
+    {
+      "label": "Graphics backend",
+      "labelIt": "Backend grafico",
+      "value": "Vulkan / RADV",
+      "reason": "Native PS5 graphics path."
+    },
+    {
+      "label": "Display mode",
+      "labelIt": "Modalità schermo",
+      "value": "Fullscreen",
+      "valueIt": "Schermo intero",
+      "reason": "PS5 uses full-screen presentation."
+    },
+    {
+      "label": "Controls",
+      "labelIt": "Controlli",
+      "value": "DualSense",
+      "reason": "Controller navigation is available throughout the settings menu."
+    }
+  ]
+}

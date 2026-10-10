@@ -1,0 +1,575 @@
+// Synthetic host fixtures only. No game or proprietary DLL bytes are used.
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstdarg>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <set>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vulkan/vulkan_core.h>
+#include <spirv-tools/libspirv.h>
+#include <spirv/unified1/spirv.h>
+#include "lossless_dll.h"
+#include "lsfg_translate.h"
+
+namespace fixture {
+int created = 0, live = 0, fail_create = -1;
+std::string watched_path;
+int watched_fd = -1, opens = 0, closes = 0, reads = 0;
+enum class Io { Normal, Chunks, Interrupted, EarlyEof, ReadError, Grow, StatError, TooLarge };
+Io io = Io::Normal;
+}
+namespace rex::ui::vulkan::framegen {
+namespace vk {
+class ShaderModule {
+ public:
+  explicit ShaderModule(VkShaderModule handle) : handle_(handle) { ++fixture::live; }
+  ShaderModule(const ShaderModule&) = delete;
+  ShaderModule& operator=(const ShaderModule&) = delete;
+  ShaderModule(ShaderModule&& other) noexcept : handle_(std::exchange(other.handle_, VK_NULL_HANDLE)) {}
+  ~ShaderModule() { if (handle_ != VK_NULL_HANDLE) --fixture::live; }
+  VkShaderModule operator*() const { return handle_; }
+ private:
+  VkShaderModule handle_;
+};
+}
+struct FixtureProperties {
+  bool vulkanMemoryModel = true, nullDescriptor = true, shaderFloat16 = true;
+  bool vulkanMemoryModelDeviceScope = true, shaderStorageImageExtendedFormats = true;
+  bool shaderStorageImageReadWithoutFormat = true, shaderStorageImageWriteWithoutFormat = true;
+  uint32_t apiVersion = VK_API_VERSION_1_3;
+};
+struct FixtureInstance {
+  uint32_t version = VK_API_VERSION_1_3;
+  uint32_t api_version() const { return version; }
+};
+struct FixtureNative {
+  FixtureProperties props;
+  FixtureInstance instance;
+  const FixtureProperties& properties() const { return props; }
+  const FixtureInstance* vulkan_instance() const { return &instance; }
+};
+class Device {
+ public:
+  FixtureNative native;
+  VkPhysicalDeviceProperties physical{};
+  VkPhysicalDeviceSubgroupProperties subgroups{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+  VkPhysicalDeviceFloatControlsProperties float_controls{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES};
+  const FixtureNative& Native() const { return native; }
+  const VkPhysicalDeviceProperties& PhysicalProperties() const { return physical; }
+  const VkPhysicalDeviceSubgroupProperties& SubgroupProperties() const { return subgroups; }
+  const VkPhysicalDeviceFloatControlsProperties& FloatControls() const { return float_controls; }
+};
+vk::ShaderModule CreateWrappedShaderModule(const Device&, std::span<const u32>) {
+  if (fixture::created == fixture::fail_create) throw std::runtime_error("injected module creation failure");
+  ++fixture::created;
+  return vk::ShaderModule(reinterpret_cast<VkShaderModule>(uintptr_t(fixture::created)));
+}
+}
+
+@SHADER_HEADER_NAMESPACE@
+@SHADER_CPP_NAMESPACE@
+
+extern "C" int __real_open(const char*, int, ...);
+extern "C" int __real_fstat(int, struct stat*);
+extern "C" ssize_t __real_read(int, void*, size_t);
+extern "C" int __real_close(int);
+extern "C" int __wrap_open(const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if (flags & O_CREAT) { va_list args; va_start(args, flags); mode = va_arg(args, int); va_end(args); }
+  const int fd = __real_open(path, flags, mode);
+  if (fd >= 0 && path == fixture::watched_path) {
+    fixture::watched_fd = fd; ++fixture::opens; fixture::reads = 0;
+  }
+  return fd;
+}
+extern "C" int __wrap_fstat(int fd, struct stat* info) {
+  const int result = __real_fstat(fd, info);
+  if (result || fd != fixture::watched_fd) return result;
+  if (fixture::io == fixture::Io::StatError) { errno = EIO; return -1; }
+  if (fixture::io == fixture::Io::Grow) --info->st_size;
+  if (fixture::io == fixture::Io::TooLarge) info->st_size = (off_t(256) << 20) + 1;
+  return result;
+}
+extern "C" ssize_t __wrap_read(int fd, void* buffer, size_t size) {
+  if (fd != fixture::watched_fd) return __real_read(fd, buffer, size);
+  ++fixture::reads;
+  if (fixture::io == fixture::Io::Interrupted && fixture::reads == 1) { errno = EINTR; return -1; }
+  if (fixture::io == fixture::Io::ReadError) { errno = EIO; return -1; }
+  if (fixture::io == fixture::Io::EarlyEof && fixture::reads > 1) return 0;
+  if (fixture::io == fixture::Io::Chunks || fixture::io == fixture::Io::EarlyEof) size = std::min(size, size_t(7));
+  return __real_read(fd, buffer, size);
+}
+extern "C" int __wrap_close(int fd) {
+  if (fd == fixture::watched_fd) { ++fixture::closes; fixture::watched_fd = -1; }
+  return __real_close(fd);
+}
+
+using namespace rex::ui::vulkan::framegen;
+namespace {
+void Require(bool condition, const std::string& reason) {
+  if (!condition) throw std::runtime_error(reason);
+}
+void Test(const char* name, const std::function<void()>& function) {
+  try { function(); std::cout << "PASS " << name << '\n'; }
+  catch (const std::exception& exception) { throw std::runtime_error(std::string(name) + ": " + exception.what()); }
+}
+std::vector<u32> Assemble(const std::string& text, spv_target_env environment = SPV_ENV_UNIVERSAL_1_5) {
+  const auto context = spvContextCreate(environment);
+  spv_binary binary = nullptr; spv_diagnostic diagnostic = nullptr;
+  const auto result = spvTextToBinary(context, text.data(), text.size(), &binary, &diagnostic);
+  const std::string detail = diagnostic && diagnostic->error ? diagnostic->error : "no diagnostic";
+  std::vector<u32> words;
+  if (result == SPV_SUCCESS) words.assign(binary->code, binary->code + binary->wordCount);
+  spvBinaryDestroy(binary); spvDiagnosticDestroy(diagnostic); spvContextDestroy(context);
+  Require(result == SPV_SUCCESS, "fixture assembly failed: " + detail + "\n" + text);
+  return words;
+}
+struct TextModule {
+  std::string capabilities, extensions, interfaces, annotations, declarations, body;
+  std::string memory = "GLSL450", entry = "main", mode = "OpExecutionMode %main LocalSize 8 4 1\n";
+  spv_target_env environment = SPV_ENV_UNIVERSAL_1_5;
+};
+std::vector<u32> Module(const TextModule& text = {}) {
+  return Assemble("OpCapability Shader\n" + text.capabilities + text.extensions +
+      "OpMemoryModel Logical " + text.memory + "\nOpEntryPoint GLCompute %main \"" + text.entry + "\" " + text.interfaces +
+      "\n" + text.mode + text.annotations +
+      "%void = OpTypeVoid\n%function = OpTypeFunction %void\n%float = OpTypeFloat 32\n%uint = OpTypeInt 32 0\n" +
+      text.declarations + "%main = OpFunction %void None %function\n%entry = OpLabel\n" + text.body +
+      "OpReturn\nOpFunctionEnd\n", text.environment);
+}
+std::vector<u8> Bytes(std::span<const u32> words) {
+  std::vector<u8> bytes(words.size_bytes());
+  std::memcpy(bytes.data(), words.data(), bytes.size()); return bytes;
+}
+ShaderCapabilities Caps() {
+  ShaderCapabilities caps;
+  caps.api_version = VK_API_VERSION_1_3;
+  caps.memory_model = caps.device_scope = caps.float16 = true;
+  caps.extended_storage_formats = caps.storage_read_without_format = caps.storage_write_without_format = true;
+  caps.subgroup_operations = 0xFF;
+  caps.limits.maxComputeWorkGroupSize[0] = caps.limits.maxComputeWorkGroupSize[1] = 1024;
+  caps.limits.maxComputeWorkGroupSize[2] = 64;
+  caps.limits.maxComputeWorkGroupInvocations = 1024;
+  caps.limits.maxPerStageDescriptorSamplers = caps.limits.maxPerStageDescriptorSampledImages = 64;
+  caps.limits.maxPerStageDescriptorStorageImages = caps.limits.maxPerStageDescriptorUniformBuffers = 64;
+  caps.limits.maxPerStageResources = 128;
+  return caps;
+}
+ShaderInterface Validate(const std::vector<u32>& words, const ShaderCapabilities& caps = Caps(),
+                         bool expected = true, const std::string& needle = {}) {
+  ShaderInterface interface; std::string error;
+  const bool result = ValidateShaderModule(words, caps, interface, error);
+  Require(result == expected, std::string("validation expected ") + (expected ? "accept" : "reject") + ": " + error);
+  if (!expected && !needle.empty()) Require(error.find(needle) != std::string::npos, "unexpected rejection: " + error);
+  if (expected) Require(error.empty(), "success retained an error");
+  return interface;
+}
+std::vector<u32> Samplers(const std::vector<std::pair<unsigned, unsigned>>& locations) {
+  TextModule text; text.declarations = "%sampler = OpTypeSampler\n%pointer = OpTypePointer UniformConstant %sampler\n";
+  for (size_t i = 0; i < locations.size(); ++i) {
+    const auto id = "%resource" + std::to_string(i);
+    text.interfaces += id + " ";
+    text.annotations += "OpDecorate " + id + " DescriptorSet " + std::to_string(locations[i].first) +
+        "\nOpDecorate " + id + " Binding " + std::to_string(locations[i].second) + "\n";
+    text.declarations += id + " = OpVariable %pointer UniformConstant\n";
+  }
+  return Module(text);
+}
+std::vector<u32> Resource(const std::string& kind) {
+  TextModule text; text.interfaces = "%resource";
+  text.annotations = "OpDecorate %resource DescriptorSet 0\nOpDecorate %resource Binding 0\n";
+  std::string storage = "UniformConstant";
+  if (kind == "ubo" || kind == "push" || kind == "buffer") {
+    storage = kind == "ubo" ? "Uniform" : kind == "push" ? "PushConstant" : "StorageBuffer";
+    if (kind == "push") text.annotations.clear();
+    text.annotations += "OpDecorate %type Block\nOpMemberDecorate %type 0 Offset 0\n";
+    text.declarations = "%type = OpTypeStruct %float\n";
+  } else if (kind == "array") {
+    text.declarations = "%sampler = OpTypeSampler\n%two = OpConstant %uint 2\n%type = OpTypeArray %sampler %two\n";
+  } else if (kind == "combined") {
+    text.declarations = "%image = OpTypeImage %float 2D 0 0 0 1 Unknown\n%type = OpTypeSampledImage %image\n";
+  } else if (kind == "storage") {
+    text.declarations = "%type = OpTypeImage %float 2D 0 0 0 2 Rgba32f\n";
+  } else if (kind == "image") {
+    text.declarations = "%type = OpTypeImage %float 2D 0 0 0 1 Unknown\n";
+  } else if (kind == "image3d") {
+    text.declarations = "%type = OpTypeImage %float 3D 0 0 0 1 Unknown\n";
+  } else if (kind == "imagearray") {
+    text.declarations = "%type = OpTypeImage %float 2D 0 1 0 1 Unknown\n";
+  } else if (kind == "multisample") {
+    text.declarations = "%type = OpTypeImage %float 2D 0 0 1 1 Unknown\n";
+  } else throw std::runtime_error("bad fixture resource kind");
+  text.declarations += "%pointer = OpTypePointer " + storage + " %type\n%resource = OpVariable %pointer " + storage + "\n";
+  return Module(text);
+}
+template <typename T> void Put(std::vector<u8>& bytes, size_t offset, T value) {
+  Require(offset <= bytes.size() && sizeof(T) <= bytes.size() - offset, "fixture write bounds");
+  std::memcpy(bytes.data() + offset, &value, sizeof(T));
+}
+template <typename T> T Get(const std::vector<u8>& bytes, size_t offset) {
+  Require(offset <= bytes.size() && sizeof(T) <= bytes.size() - offset, "fixture read bounds");
+  T value; std::memcpy(&value, bytes.data() + offset, sizeof(T)); return value;
+}
+struct PeImage {
+  static constexpr size_t raw = 0x400;
+  static constexpr u32 rva = 0x1000;
+  std::vector<u8> bytes;
+  size_t optional = 0x98, section, directory, first_language, first_data;
+  std::map<u32, size_t> names, data_entries, data;
+};
+std::array<u32, 25> Ids() {
+  std::array<u32, 25> ids{255, 256};
+  for (u32 i = 0; i < 23; ++i) ids[i + 2] = 280 + i;
+  return ids;
+}
+PeImage Pe(bool plus, const std::vector<u32>* fp16, const std::vector<u32>* fp32) {
+  std::map<u32, std::vector<u8>> resources;
+  for (u32 id : Ids()) {
+    if (fp16) resources.emplace(id + 49, Bytes(*fp16));
+    if (fp32) resources.emplace(id + 98, Bytes(*fp32));
+  }
+  PeImage image; const u16 optional_size = plus ? 0xF0 : 0xE0;
+  image.section = image.optional + optional_size;
+  image.directory = image.optional + (plus ? 112 : 96) + 16;
+  size_t next_directory = (0x30 + resources.size() * 8 + 15) & ~size_t(15);
+  const size_t payload = (next_directory + resources.size() * 64 + 0xFFF) & ~size_t(0xFFF);
+  size_t total = payload;
+  for (const auto& [id, bytes] : resources) { (void)id; total += (bytes.size() + 15) & ~size_t(15); }
+  total = (total + 0x1FF) & ~size_t(0x1FF);
+  image.bytes.resize(PeImage::raw + total);
+  Put<u16>(image.bytes, 0, 0x5A4D); Put<u32>(image.bytes, 0x3C, 0x80);
+  Put<u32>(image.bytes, 0x80, 0x4550); Put<u16>(image.bytes, 0x86, 1);
+  Put<u16>(image.bytes, 0x94, optional_size); Put<u16>(image.bytes, image.optional, plus ? 0x20B : 0x10B);
+  Put<u32>(image.bytes, image.directory - 20, 16);
+  Put<u32>(image.bytes, image.directory, PeImage::rva);
+  Put<u32>(image.bytes, image.directory + 4, u32(total));
+  Put<u32>(image.bytes, image.section + 8, u32(total));
+  Put<u32>(image.bytes, image.section + 12, PeImage::rva);
+  Put<u32>(image.bytes, image.section + 16, u32(total));
+  Put<u32>(image.bytes, image.section + 20, PeImage::raw);
+  Put<u16>(image.bytes, PeImage::raw + 14, 1);
+  Put<u32>(image.bytes, PeImage::raw + 16, 10);
+  Put<u32>(image.bytes, PeImage::raw + 20, 0x80000020);
+  Put<u16>(image.bytes, PeImage::raw + 0x20 + 14, u16(resources.size()));
+  size_t index = 0, next_data = payload;
+  for (const auto& [id, bytes] : resources) {
+    const size_t name = PeImage::raw + 0x30 + index * 8;
+    const size_t language = next_directory;
+    const size_t entry = language + 32;
+    image.names[id] = name; image.data_entries[id] = PeImage::raw + entry; image.data[id] = PeImage::raw + next_data;
+    if (!index) { image.first_language = PeImage::raw + language; image.first_data = PeImage::raw + entry; }
+    Put<u32>(image.bytes, name, id); Put<u32>(image.bytes, name + 4, 0x80000000u | u32(language));
+    Put<u16>(image.bytes, PeImage::raw + language + 14, 1);
+    Put<u32>(image.bytes, PeImage::raw + language + 16, 0x409);
+    Put<u32>(image.bytes, PeImage::raw + language + 20, u32(entry));
+    Put<u32>(image.bytes, PeImage::raw + entry, PeImage::rva + u32(next_data));
+    Put<u32>(image.bytes, PeImage::raw + entry + 4, u32(bytes.size()));
+    std::copy(bytes.begin(), bytes.end(), image.bytes.begin() + PeImage::raw + next_data);
+    next_data += (bytes.size() + 15) & ~size_t(15); next_directory += 64; ++index;
+  }
+  return image;
+}
+ShaderLoadResult Parse(const PeImage& image, LosslessStatus expected, bool allow_fp16 = true,
+                       bool prefer_fp16 = true, ShaderVariant variant = ShaderVariant::NativeFp32) {
+  ShaderModules modules{{999, {1, 2, 3}}};
+  auto result = ParseShaderModules(image.bytes, modules, allow_fp16, prefer_fp16);
+  Require(result.status == expected, std::string("parser status ") + LosslessStatusName(result.status) + ": " + result.detail);
+  if (expected == LosslessStatus::Ok) {
+    Require(modules.size() == 25 && !modules.contains(999), "incomplete/old module map");
+    Require(result.variant == variant && result.source_bytes == image.bytes.size(), "variant/source bytes mismatch");
+  } else Require(modules.empty(), "failed parse published partial or stale modules");
+  return result;
+}
+void Write(const std::filesystem::path& path, const std::vector<u8>& bytes) {
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+  Require(file.good(), "cannot write synthetic fixture");
+}
+ShaderLoadResult Load(const std::filesystem::path& path, fixture::Io io, LosslessStatus expected) {
+  fixture::watched_path = path.string(); fixture::io = io; fixture::opens = fixture::closes = 0;
+  ShaderModules modules{{999, {0}}};
+  const auto result = LoadShaderModules(path, modules, true, true);
+  Require(result.status == expected, std::string("load status ") + LosslessStatusName(result.status) + ": " + result.detail);
+  Require(fixture::opens == fixture::closes && fixture::watched_fd == -1, "file descriptor leaked");
+  if (expected == LosslessStatus::Ok) Require(modules.size() == 25, "load incomplete");
+  else Require(modules.empty(), "failed load retained modules");
+  fixture::io = fixture::Io::Normal; fixture::watched_path.clear();
+  return result;
+}
+Device MakeDevice() {
+  Device device; const auto caps = Caps(); device.physical.limits = caps.limits;
+  device.subgroups.supportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+  device.subgroups.supportedOperations = caps.subgroup_operations;
+  return device;
+}
+void Constructor(const std::filesystem::path& path, const PeImage& image, Device device,
+                 bool expected, ShaderVariant variant = ShaderVariant::NativeFp32,
+                 const std::string& needle = {}) {
+  Write(path, image.bytes); fixture::created = fixture::live = 0; fixture::fail_create = -1;
+  bool accepted = false; std::string error;
+  try {
+    LsfgShaders shaders(device, path); accepted = true;
+    Require(shaders.Variant() == variant && shaders.SourceBytes() == image.bytes.size(), "constructor provenance");
+    Require(fixture::created == 25 && fixture::live == 25, "constructor module count");
+    Require(shaders.Get(255) != VK_NULL_HANDLE && shaders.Get(999) == VK_NULL_HANDLE, "shader lookup contract");
+    shaders.ValidateInterface(255, {});
+    bool mismatch = false;
+    try { const std::array<VkDescriptorType, 1> wrong{VK_DESCRIPTOR_TYPE_SAMPLER}; shaders.ValidateInterface(255, wrong); }
+    catch (const std::runtime_error&) { mismatch = true; }
+    Require(mismatch, "stage descriptor mismatch accepted");
+  } catch (const std::exception& exception) { error = exception.what(); }
+  Require(accepted == expected && (expected ? error.empty() : !error.empty()), "constructor unexpected outcome: " + error);
+  Require(fixture::live == 0, "module lifetime leaked");
+  if (!expected) {
+    Require(fixture::created == 0, "invalid set reached module creation");
+    if (!needle.empty()) Require(error.find(needle) != std::string::npos, "unexpected constructor rejection: " + error);
+  }
+}
+}
+
+int main(int argc, char** argv) {
+  try {
+    Require(argc == 2, "expected scratch directory");
+    const std::filesystem::path scratch(argv[1]); std::filesystem::create_directories(scratch);
+    const auto simple = Module();
+    const auto good32 = Pe(false, nullptr, &simple), good64 = Pe(true, nullptr, &simple);
+    const auto both = Pe(true, &simple, &simple);
+    Test("PE32 parses all25 native FP32 resources", [&] { Parse(good32, LosslessStatus::Ok); });
+    Test("PE32+ parses all25 native FP32 resources", [&] { Parse(good64, LosslessStatus::Ok); });
+    Test("native FP16 selected only when allowed and preferred", [&] {
+      Parse(both, LosslessStatus::Ok, true, true, ShaderVariant::NativeFp16);
+      Parse(both, LosslessStatus::Ok, false, true); Parse(both, LosslessStatus::Ok, true, false);
+    });
+    Test("FP16-only source rejected when device disables FP16", [&] {
+      auto image = Pe(true, &simple, nullptr); Parse(image, LosslessStatus::Ok, true, true, ShaderVariant::NativeFp16);
+      Parse(image, LosslessStatus::MissingShaders, false, true);
+    });
+    Test("missing one required native resource never publishes partial map", [&] {
+      auto image = good64; Put<u32>(image.bytes, image.names.at(255 + 98), 999); Parse(image, LosslessStatus::MissingShaders);
+    });
+    Test("PE malformed DOS/signature/optional kind/count/directory count rejected", [&] {
+      for (const auto& [offset, value] : std::vector<std::pair<size_t, u32>>{{0, 0}, {0x80, 0}, {0x3C, 0xFFFFFFF0},
+             {good64.optional, 0x999}, {0x86, 129}, {good64.directory - 20, 2}}) {
+        auto image = good64; Put<u32>(image.bytes, offset, value); Parse(image, LosslessStatus::NotPortableExecutable);
+      }
+    });
+    Test("PE every truncated header boundary rejected without out-of-bounds", [&] {
+      for (size_t end : {size_t(0), size_t(2), size_t(0x3D), size_t(0x83), size_t(0x98), good64.section + 39, size_t(0x401)}) {
+        auto image = good64; image.bytes.resize(end); Parse(image, LosslessStatus::NotPortableExecutable);
+      }
+    });
+    Test("resource RVA cannot point into section virtual zero fill", [&] {
+      auto image = good64; const auto raw_size = Get<u32>(image.bytes, image.section + 16);
+      Put<u32>(image.bytes, image.section + 8, raw_size + 0x1000);
+      Put<u32>(image.bytes, image.first_data, PeImage::rva + raw_size + 16); Parse(image, LosslessStatus::NotPortableExecutable);
+    });
+    Test("section raw offset/size and resource-size wrap bounds rejected", [&] {
+      for (auto offset : {good64.section + 16, good64.section + 20, good64.directory + 4, good64.first_data + 4}) {
+        auto image = good64; Put<u32>(image.bytes, offset, 0xFFFFFFF0); Parse(image, LosslessStatus::NotPortableExecutable);
+      }
+    });
+    Test("resource directory count above4096 rejected", [&] {
+      auto image = good64; Put<u16>(image.bytes, PeImage::raw + 14, 4097); Parse(image, LosslessStatus::NotPortableExecutable);
+    });
+    Test("RCDATA must be a directory and duplicate root types rejected", [&] {
+      auto image = good64; Put<u32>(image.bytes, PeImage::raw + 20, 0x20); Parse(image, LosslessStatus::NotPortableExecutable);
+      image = good64; Put<u16>(image.bytes, PeImage::raw + 14, 2);
+      Put<u32>(image.bytes, PeImage::raw + 24, 10); Put<u32>(image.bytes, PeImage::raw + 28, 0x80000020);
+      Parse(image, LosslessStatus::NotPortableExecutable);
+    });
+    Test("named resource IDs and absent language entries cannot masquerade as shader IDs", [&] {
+      auto image = good64; Put<u32>(image.bytes, image.names.begin()->second, 0x80000001); Parse(image, LosslessStatus::MissingShaders);
+      image = good64; Put<u16>(image.bytes, image.first_language + 14, 0); Parse(image, LosslessStatus::MissingShaders);
+    });
+    Test("duplicate numeric resource ID rejected", [&] {
+      auto image = good64; auto next = std::next(image.names.begin());
+      Put<u32>(image.bytes, next->second, image.names.begin()->first); Parse(image, LosslessStatus::NotPortableExecutable);
+    });
+    Test("language selection skips named/directory entries and accepts later numeric leaf", [&] {
+      auto image = good64; const auto leaf = Get<u32>(image.bytes, image.first_language + 20);
+      Put<u16>(image.bytes, image.first_language + 14, 2);
+      Put<u32>(image.bytes, image.first_language + 16, 0x80000001);
+      Put<u32>(image.bytes, image.first_language + 24, 0x410); Put<u32>(image.bytes, image.first_language + 28, leaf);
+      Parse(image, LosslessStatus::Ok);
+      Put<u32>(image.bytes, image.first_language + 16, 0x409);
+      Put<u32>(image.bytes, image.first_language + 20, 0x80000000u | leaf); Parse(image, LosslessStatus::Ok);
+    });
+    Test("language data leaf must have full16byte record inside resource directory", [&] {
+      auto image = good64; const auto size = Get<u32>(image.bytes, image.directory + 4);
+      Put<u32>(image.bytes, image.first_language + 20, size - 8); Parse(image, LosslessStatus::NotPortableExecutable);
+    });
+    Test("bounded resource tree tolerates no recursive cycle", [&] {
+      auto image = good64; Put<u32>(image.bytes, PeImage::raw + 20, 0x80000000); Parse(image, LosslessStatus::MissingShaders);
+    });
+    Test("non-SPIRV and unaligned native resource sizes rejected", [&] {
+      auto image = good64; Put<u32>(image.bytes, image.data.begin()->second, 0x4C495844); Parse(image, LosslessStatus::MissingShaders);
+      image = good64; Put<u32>(image.bytes, image.first_data + 4, 21); Parse(image, LosslessStatus::MissingShaders);
+    });
+    Test("adopter rejects zero/overrun instruction before first function", [&] {
+      auto broken = simple; broken[5] = 0; auto image = Pe(true, nullptr, &broken); Parse(image, LosslessStatus::InvalidShader);
+      broken = simple; broken[5] = 0xFFFF0011; image = Pe(true, nullptr, &broken); Parse(image, LosslessStatus::InvalidShader);
+    });
+    Test("adopter renumbers ordered bindings but preserves descriptor sets", [&] {
+      auto words = AdoptSpirvModule(Bytes(Samplers({{0, 9}, {0, 3}})));
+      Require(Validate(words).bindings == std::vector<VkDescriptorType>(2, VK_DESCRIPTOR_TYPE_SAMPLER), "renumbered interface");
+      words = AdoptSpirvModule(Bytes(Samplers({{1, 9}})));
+      Validate(words, Caps(), false, "descriptor set zero");
+    });
+    Test("adopter does not replace full validator for malformed function tail", [&] {
+      auto words = simple; words.push_back(0); auto adopted = AdoptSpirvModule(Bytes(words));
+      Require(!adopted.empty(), "fixture must reach full validator"); Validate(adopted, Caps(), false);
+    });
+    Test("SPIRV1.5 accepted by Vulkan1.2 actual validator", [&] {
+      auto caps = Caps(); caps.api_version = VK_API_VERSION_1_2; const auto interface = Validate(simple, caps);
+      Require(interface.local_size == std::array<u32, 3>{8, 4, 1}, "workgroup reflection");
+    });
+    Test("SPIRV1.6 requires actual Vulkan1.3 environment", [&] {
+      TextModule text; text.environment = SPV_ENV_UNIVERSAL_1_6; const auto words = Module(text);
+      Validate(words); auto caps = Caps(); caps.api_version = VK_API_VERSION_1_2; Validate(words, caps, false);
+    });
+    Test("SPIRV header ID bound and shader byte limit enforced", [&] {
+      auto words = simple; words[3] = (1u << 22) + 1; Validate(words, Caps(), false, "header");
+      words = simple; words.resize(kMaximumShaderBytes / 4 + 1); Validate(words, Caps(), false, "runtime size");
+    });
+    Test("non-main compute entry rejected after SPIRV validation", [&] {
+      TextModule text; text.entry = "other"; Validate(Module(text), Caps(), false, "entry main");
+    });
+    Test("native Float16 capability follows enabled device feature", [&] {
+      TextModule text; text.capabilities = "OpCapability Float16\n"; text.declarations = "%half = OpTypeFloat 16\n";
+      auto words = Module(text); Validate(words); auto caps = Caps(); caps.float16 = false;
+      Validate(words, caps, false, "unsupported capability");
+    });
+    Test("unimplemented Int64 capability rejected", [&] {
+      TextModule text; text.capabilities = "OpCapability Int64\n"; text.declarations = "%wide = OpTypeInt 64 0\n";
+      Validate(Module(text), Caps(), false, "unsupported capability");
+    });
+    Test("Vulkan memory model and device scope require enabled features", [&] {
+      TextModule text; text.capabilities = "OpCapability VulkanMemoryModel\nOpCapability VulkanMemoryModelDeviceScope\n";
+      text.memory = "Vulkan"; const auto words = Module(text); Validate(words);
+      auto caps = Caps(); caps.memory_model = false; Validate(words, caps, false, "unsupported capability");
+      caps = Caps(); caps.device_scope = false; Validate(words, caps, false, "unsupported capability");
+    });
+    Test("compute subgroup capability follows supported operation bits", [&] {
+      TextModule text; text.capabilities = "OpCapability GroupNonUniform\nOpCapability GroupNonUniformVote\n";
+      const auto words = Module(text); Validate(words); auto caps = Caps(); caps.subgroup_operations = VK_SUBGROUP_FEATURE_BASIC_BIT;
+      Validate(words, caps, false, "unsupported capability");
+    });
+    Test("per-width float control mode checks physical Float32 support", [&] {
+      TextModule text; text.capabilities = "OpCapability DenormPreserve\n";
+      text.mode += "OpExecutionMode %main DenormPreserve 32\n"; const auto words = Module(text);
+      Validate(words, Caps(), false, "floating-point execution mode");
+      auto caps = Caps(); caps.float_controls.shaderDenormPreserveFloat16 = VK_TRUE;
+      Validate(words, caps, false, "floating-point execution mode");
+      caps.float_controls.shaderDenormPreserveFloat32 = VK_TRUE; Validate(words, caps);
+    });
+    Test("workgroup axis and invocation product respect device limits", [&] {
+      auto caps = Caps(); caps.limits.maxComputeWorkGroupSize[0] = 4; Validate(simple, caps, false, "dimension");
+      caps = Caps(); caps.limits.maxComputeWorkGroupInvocations = 16; Validate(simple, caps, false, "invocation count");
+    });
+    Test("static LocalSizeId resolves only ordinary constants", [&] {
+      TextModule text; text.environment = SPV_ENV_UNIVERSAL_1_6;
+      text.mode = "OpExecutionModeId %main LocalSizeId %x %y %z\n";
+      text.declarations = "%x = OpConstant %uint 8\n%y = OpConstant %uint 4\n%z = OpConstant %uint 1\n";
+      Require(Validate(Module(text)).local_size == std::array<u32, 3>{8, 4, 1}, "LocalSizeId values");
+      text.declarations = "%x = OpSpecConstant %uint 8\n%y = OpConstant %uint 4\n%z = OpConstant %uint 1\n";
+      Validate(Module(text), Caps(), false, "specialized workgroup size");
+    });
+    Test("supported sampler/image/storage/UBO layouts reflected exactly", [&] {
+      Require(Validate(Samplers({{0, 0}})).bindings == std::vector<VkDescriptorType>{VK_DESCRIPTOR_TYPE_SAMPLER}, "sampler");
+      for (const auto& [kind, type] : std::vector<std::pair<std::string, VkDescriptorType>>{
+          {"image", VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE}, {"storage", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, {"ubo", VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER}}) {
+        Require(Validate(Resource(kind)).bindings == std::vector<VkDescriptorType>{type}, kind);
+      }
+    });
+    Test("nonzero set, binding gaps and duplicate binding reject", [&] {
+      Validate(Samplers({{1, 0}}), Caps(), false, "descriptor set zero");
+      Validate(Samplers({{0, 1}}), Caps(), false, "non-contiguous");
+      Validate(Samplers({{0, 0}, {0, 0}}), Caps(), false, "duplicate descriptor");
+    });
+    Test("descriptor arrays/combined samplers/unsupported image shapes reject", [&] {
+      for (auto kind : {"array", "combined", "image3d", "imagearray", "multisample"})
+        Validate(Resource(kind), Caps(), false, "unsupported LSFG descriptor");
+    });
+    Test("push constants and storage buffers outside LSFG contract reject", [&] {
+      Validate(Resource("push"), Caps(), false, "outside LSFG");
+      Validate(Resource("buffer"), Caps(), false, "outside LSFG");
+    });
+    Test("per-stage descriptor counts checked against physical limits", [&] {
+      auto caps = Caps(); caps.limits.maxPerStageDescriptorSamplers = 0;
+      Validate(Samplers({{0, 0}}), caps, false, "descriptors exceed");
+      caps = Caps(); caps.limits.maxPerStageResources = 0;
+      Validate(Resource("image"), caps, false, "descriptors exceed");
+    });
+    const auto dll = scratch / "synthetic-Lossless.dll"; Write(dll, good64.bytes);
+    Test("descriptor read-only load closes file on normal success", [&] { Load(dll, fixture::Io::Normal, LosslessStatus::Ok); });
+    Test("positive short reads are accumulated to full file", [&] { Load(dll, fixture::Io::Chunks, LosslessStatus::Ok); });
+    Test("EINTR read retries without publishing partial data", [&] { Load(dll, fixture::Io::Interrupted, LosslessStatus::Ok); });
+    Test("early EOF returns readable error and closes descriptor", [&] { Load(dll, fixture::Io::EarlyEof, LosslessStatus::UnreadableFile); });
+    Test("read failure returns readable error and closes descriptor", [&] { Load(dll, fixture::Io::ReadError, LosslessStatus::UnreadableFile); });
+    Test("file growth detected by final extra-byte read", [&] { Load(dll, fixture::Io::Grow, LosslessStatus::UnreadableFile); });
+    Test("fstat failure returns readable error and closes descriptor", [&] { Load(dll, fixture::Io::StatError, LosslessStatus::UnreadableFile); });
+    Test("runtime256MiB limit rejects before allocating or reading", [&] {
+      Load(dll, fixture::Io::TooLarge, LosslessStatus::TooLarge); Require(fixture::reads == 0, "oversize file read");
+    });
+    Test("missing/empty path is not-installed and regular directory rejects", [&] {
+      Load({}, fixture::Io::Normal, LosslessStatus::NotInstalled);
+      Load(scratch / "missing.dll", fixture::Io::Normal, LosslessStatus::NotInstalled);
+      Load(scratch, fixture::Io::Normal, LosslessStatus::UnreadableFile);
+    });
+    Test("symbolic-link and FIFO are not accepted as native shader file", [&] {
+      const auto link = scratch / "link.dll"; std::filesystem::remove(link); std::filesystem::create_symlink(dll, link);
+      Load(link, fixture::Io::Normal, LosslessStatus::UnreadableFile);
+      const auto fifo = scratch / "pipe.dll"; std::filesystem::remove(fifo); Require(mkfifo(fifo.c_str(), 0600) == 0, "mkfifo");
+      Load(fifo, fixture::Io::Normal, LosslessStatus::UnreadableFile);
+    });
+    Test("empty regular file opens but runtime rejects its resource content", [&] {
+      const auto empty = scratch / "empty.dll"; Write(empty, {}); Load(empty, fixture::Io::Normal, LosslessStatus::NotPortableExecutable);
+    });
+    Test("constructor validates all25 modules then creates modules and releases all", [&] { Constructor(dll, good64, MakeDevice(), true); });
+    Test("constructor prefers FP16 when native capability allows", [&] { Constructor(dll, both, MakeDevice(), true, ShaderVariant::NativeFp16); });
+    Test("constructor malformed FP16 tail falls back to validated FP32", [&] {
+      auto broken = simple; broken.push_back(0); Constructor(dll, Pe(true, &broken, &simple), MakeDevice(), true);
+    });
+    Test("constructor malformed FP16 first instruction falls back to validated FP32", [&] {
+      auto broken = simple; broken[5] = 0; Constructor(dll, Pe(true, &broken, &simple), MakeDevice(), true);
+    });
+    Test("constructor invalid last resource never reaches native module creation", [&] {
+      auto image = good64; const auto offset = image.data.at(302 + 98); Put<u32>(image.bytes, offset + 5 * 4, 0);
+      Constructor(dll, image, MakeDevice(), false, ShaderVariant::NativeFp32, "invalid_spirv");
+    });
+    Test("constructor full-validator failure across both variants never creates modules", [&] {
+      auto broken = simple; broken.back() = 0; Constructor(dll, Pe(true, &broken, &broken), MakeDevice(), false, ShaderVariant::NativeFp32, "FP16:");
+    });
+    Test("constructor respects min device and instance Vulkan API version", [&] {
+      TextModule text; text.environment = SPV_ENV_UNIVERSAL_1_6; const auto modern = Module(text);
+      auto image = Pe(true, nullptr, &modern); auto device = MakeDevice(); device.native.instance.version = VK_API_VERSION_1_2;
+      Constructor(dll, image, device, false); Constructor(dll, image, MakeDevice(), true);
+    });
+    Test("constructor requires enabled memory model/nullDescriptor/API1.2", [&] {
+      auto device = MakeDevice(); device.native.props.vulkanMemoryModel = false; Constructor(dll, good64, device, false, ShaderVariant::NativeFp32, "needs enabled");
+      device = MakeDevice(); device.native.props.nullDescriptor = false; Constructor(dll, good64, device, false, ShaderVariant::NativeFp32, "needs enabled");
+      device = MakeDevice(); device.native.props.apiVersion = VK_API_VERSION_1_1; Constructor(dll, good64, device, false, ShaderVariant::NativeFp32, "needs enabled");
+    });
+    Test("constructor partial native creation failure releases existing modules", [&] {
+      Write(dll, good64.bytes); fixture::created = fixture::live = 0; fixture::fail_create = 7;
+      bool caught = false; try { LsfgShaders shaders(MakeDevice(), dll); } catch (const std::runtime_error&) { caught = true; }
+      Require(caught && fixture::created == 7 && fixture::live == 0, "partial driver failure cleanup"); fixture::fail_create = -1;
+    });
+    return 0;
+  } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }
+}

@@ -1,0 +1,564 @@
+// Execute the production batch and single-paint bodies AND submission tracker
+// with a simulated Vulkan device. Only GPU fences are simulated; completion
+// comparisons and submission ownership use the real tracker implementation.
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+#include <rex/platform/framegen_prospero.h>
+#include <rex/platform/settings_prospero.h>
+#define REX_PLATFORM_PROSPERO 1
+#define REXLOG_ERROR(...) RecordError(__VA_ARGS__)
+#define REXLOG_WARN(...) ((void)0)
+#define REXLOG_INFO(...) ((void)0)
+#define assert_true(v) assert(v)
+#define assert_not_zero(v) assert(v)
+#define assert_not_null(v) assert(v)
+
+template <class T> T H(uintptr_t v) { return reinterpret_cast<T>(v); }
+template <class T> uintptr_t Id(T v) { return reinterpret_cast<uintptr_t>(v); }
+struct Recorded { VkDescriptorSet bound{}; VkImageView drawn{}; bool optional=false, ended=false; };
+struct FenceState { uint64_t queue_serial=0; bool signaled=false; };
+struct Harness {
+  unsigned acquire=0, reset=0, begin=0, submit=0, present=0, ui=0, consume=0;
+  int fail_submit=-1, fail_present=-1, fail_acquire=-1, fail_end=-1, fail_reset=-1, fail_begin=-1;
+  bool fail_wait=false, fail_pipeline=false, change_setting_in_ui=false;
+  bool acquired=false, present_signaled=false, require_consumer_lock=false;
+  bool startup_fg=true, requested_fg=true, fail_generator_constructor=false;
+  uint64_t request_revision=1;
+  int off_on_present=-1, pair_on_present=-1, off_on_record=-1, pair_on_record=-1;
+  unsigned generator_constructions=0;
+  uint64_t completed=0, tick=0;
+  uint64_t queued=0, next_fence=10000;
+  std::map<uintptr_t, FenceState> fences;
+  unsigned fence_waits=0, fence_queries=0;
+  uint32_t output_mhz=119880;
+  std::mutex consumer;
+  std::map<uintptr_t, Recorded> buffers;
+  std::map<uintptr_t, VkImageView> descriptors;
+  std::map<uintptr_t, uint64_t> descriptor_last_use;
+  std::vector<Recorded> submitted;
+  std::vector<std::pair<bool,bool>> notified;
+  std::vector<uint64_t> waited;
+  std::vector<std::string> errors;
+  void CompleteThrough(uint64_t serial) {
+    completed=std::max(completed,serial);
+    for(auto& [id,fence]:fences)
+      if(fence.queue_serial && fence.queue_serial<=completed)fence.signaled=true;
+  }
+};
+Harness* state;
+template<class... Args> void RecordError(const char* format,Args&&...) {state->errors.emplace_back(format);}
+namespace rex {
+namespace chrono { struct Clock { static uint64_t QueryHostTickCount() { return ++state->tick; } }; }
+namespace platform::prospero {
+LiveSettings service;
+LiveSettings& GetLiveSettings() { return service; }
+FrameGenerationSessionRequest ReadFrameGenerationSessionRequest() {
+  return {state->requested_fg,state->request_revision};
+}
+bool ToggleFrameGenerationForSession() {
+  ++state->request_revision;state->requested_fg=!state->requested_fg;return state->requested_fg;
+}
+}
+}
+namespace platform=rex::platform;
+void RecordPresentTime(uint32_t, uint64_t) {}
+template <class... A> void prospero_trace_checkpoint(A...) {}
+template <class... A> void prospero_trace_event(A...) {}
+uint64_t prospero_metrics_clock_ns() { return ++state->tick; }
+void prospero_metrics_present_result(int, uint64_t) {}
+enum {PROSPERO_PHASE_SUBMIT_ERROR,PROSPERO_PHASE_PRESENT_BEGIN,PROSPERO_PHASE_PRESENT_END,PROSPERO_TRACE_PHASE};
+std::atomic<uint64_t> g_host_presents{0};
+uint32_t GetProsperoOutputMilliHertz() { return state->output_mhz; }
+struct Noop { template <class... A> void operator()(A&&...) const {} };
+struct Success { template <class... A> VkResult operator()(A&&...) const { return VK_SUCCESS; } };
+
+struct VulkanDevice {
+  struct Functions {
+    VkResult vkCreateFence(VkDevice,const VkFenceCreateInfo*,const VkAllocationCallbacks*,VkFence* fence) const {
+      *fence=H<VkFence>(++state->next_fence);state->fences.emplace(Id(*fence),FenceState{});return VK_SUCCESS;
+    }
+    static void vkDestroyFence(VkDevice,VkFence fence,const VkAllocationCallbacks*) {
+      state->fences.erase(Id(fence));
+    }
+    VkResult vkResetFences(VkDevice,uint32_t count,const VkFence* fences) const {
+      for(uint32_t i=0;i<count;++i)state->fences.at(Id(fences[i]))={};
+      return VK_SUCCESS;
+    }
+    VkResult vkGetFenceStatus(VkDevice,VkFence fence) const {
+      ++state->fence_queries;
+      return state->fences.at(Id(fence)).signaled?VK_SUCCESS:VK_NOT_READY;
+    }
+    VkResult vkWaitForFences(VkDevice,uint32_t count,const VkFence* fences,VkBool32 wait_all,uint64_t) const {
+      ++state->fence_waits;assert(count==1 && wait_all==VK_TRUE);
+      auto& fence=state->fences.at(Id(fences[0]));
+      state->waited.push_back(fence.queue_serial);
+      if(fence.signaled)return VK_SUCCESS;
+      if(state->fail_wait)return VK_ERROR_DEVICE_LOST;
+      assert(fence.queue_serial);state->CompleteThrough(fence.queue_serial);return VK_SUCCESS;
+    }
+    VkResult vkResetCommandPool(VkDevice, VkCommandPool pool, VkFlags) const {
+      const int call=state->reset++;
+      if(call==state->fail_reset)return VK_ERROR_OUT_OF_HOST_MEMORY;
+      state->buffers[Id(pool)+100]={}; return VK_SUCCESS;
+    }
+    VkResult vkBeginCommandBuffer(VkCommandBuffer, const VkCommandBufferBeginInfo*) const {
+      const int call=state->begin++;
+      return call==state->fail_begin?VK_ERROR_OUT_OF_HOST_MEMORY:VK_SUCCESS;
+    }
+    VkResult vkAcquireNextImageKHR(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t* index) const {
+      const int call=state->acquire++;
+      if(call==state->fail_acquire) return VK_ERROR_OUT_OF_DATE_KHR;
+      assert(!state->acquired); state->acquired=true; *index=call%3; return VK_SUCCESS;
+    }
+    void vkUpdateDescriptorSets(VkDevice, uint32_t count, const VkWriteDescriptorSet* writes, uint32_t, const VkCopyDescriptorSet*) const {
+      for(uint32_t i=0;i<count;++i) {
+        const auto set=Id(writes[i].dstSet);
+        assert(state->descriptor_last_use[set]<=state->completed);
+        assert(writes[i].pImageInfo->imageView);
+        state->descriptors[set]=writes[i].pImageInfo->imageView;
+      }
+    }
+    void vkCmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet* set, uint32_t, const uint32_t*) const {
+      state->buffers[Id(cmd)].bound=*set;
+    }
+    void vkCmdDraw(VkCommandBuffer cmd, uint32_t, uint32_t, uint32_t, uint32_t) const {
+      auto& recording=state->buffers[Id(cmd)]; recording.drawn=state->descriptors.at(Id(recording.bound));
+    }
+    VkResult vkEndCommandBuffer(VkCommandBuffer cmd) const {
+      const int call=state->submit;
+      if(call==state->fail_end) return VK_ERROR_OUT_OF_HOST_MEMORY;
+      state->buffers[Id(cmd)].ended=true; return VK_SUCCESS;
+    }
+    VkResult vkQueueSubmit(VkQueue, uint32_t count, const VkSubmitInfo* infos, VkFence fence) const {
+      if(!count) {
+        if(fence)state->fences.at(Id(fence)).queue_serial=++state->queued;
+        return VK_SUCCESS;
+      }
+      const int call=state->submit++;
+      if(call==state->fail_submit) return VK_ERROR_OUT_OF_HOST_MEMORY;
+      assert(count==1 && infos[0].waitSemaphoreCount==1 && state->acquired);
+      state->acquired=false; state->present_signaled=true;
+      const auto recording=state->buffers.at(Id(infos[0].pCommandBuffers[infos[0].commandBufferCount-1]));
+      assert(recording.ended);
+      const uint64_t queue_serial=++state->queued;
+      if(fence)state->fences.at(Id(fence)).queue_serial=queue_serial;
+      if(recording.bound) state->descriptor_last_use[Id(recording.bound)]=queue_serial;
+      state->submitted.push_back(recording); return VK_SUCCESS;
+    }
+    VkResult vkQueuePresentKHR(VkQueue, const VkPresentInfoKHR* info) const {
+      assert(info->waitSemaphoreCount==1 && state->present_signaled);
+      state->present_signaled=false;
+      if(state->require_consumer_lock) {
+        bool entered=false;
+        std::thread contender([&]{if(state->consumer.try_lock()){entered=true;state->consumer.unlock();}});
+        contender.join(); assert(!entered);
+      }
+      const int call=state->present++;
+      if(call==state->off_on_present)rex::platform::prospero::ToggleFrameGenerationForSession();
+      if(call==state->pair_on_present) {
+        rex::platform::prospero::ToggleFrameGenerationForSession();
+        rex::platform::prospero::ToggleFrameGenerationForSession();
+      }
+      return call==state->fail_present ? VK_ERROR_OUT_OF_DATE_KHR : VK_SUCCESS;
+    }
+    Noop vkDestroyFramebuffer, vkDestroyPipeline, vkCmdPipelineBarrier, vkCmdBeginRenderPass,
+      vkCmdSetViewport, vkCmdSetScissor, vkCmdBindPipeline, vkCmdPushConstants,
+      vkCmdClearAttachments, vkCmdEndRenderPass;
+    Success vkCreateFramebuffer;
+  };
+  struct Queue { struct Acquisition { VkQueue queue() const {return H<VkQueue>(1);} }; };
+  Functions functions_;
+  const Functions& functions() const {return functions_;}
+  VkDevice device() const {return H<VkDevice>(1);}
+  int properties() const {return 0;}
+  uint32_t queue_family_graphics_compute() const {return 0;}
+  Queue::Acquisition AcquireQueue(uint32_t,uint32_t) const {return {};}
+};
+namespace util {
+VkExtent2D GetMax2DFramebufferExtent(int) {return {8192,8192};}
+template<class F,class T> void DestroyAndNullHandle(F fn,VkDevice d,T& handle){fn(d,handle,nullptr);handle={};}
+}
+@@SUBMISSION_TRACKER_CLASS@@
+@@SUBMISSION_TRACKER_IMPLEMENTATION@@
+@@FRAMEGEN_STRUCTS@@
+struct ProsperoFrameGenerator {
+  uint32_t count=0;
+  unsigned calls=0, failures=0;
+  uint64_t last_serial=0;
+  uint32_t actual_mhz=0;
+  bool discard=false, invalid=false, throws=false, disabled=false;
+  bool overlay=false,enabled=true;
+  unsigned overlay_transitions=0,history_resets=0;
+  ProsperoFrameGenerator():enabled(state->startup_fg) {
+    ++state->generator_constructions;
+    if(state->fail_generator_constructor)throw std::runtime_error("injected generator constructor failure");
+  }
+  ProsperoFrameGenerator(const VulkanDevice&,std::function<bool()>):ProsperoFrameGenerator(){}
+  void SetEnabledForSession(bool value,bool reset_history=false) {
+    if(enabled==value&&!reset_history)return;
+    enabled=value;last_serial=0;++history_resets;
+  }
+  void SetOverlayActive(bool active) {
+    state->require_consumer_lock=!active&&!disabled&&enabled;
+    if(overlay==active)return;
+    overlay=active;++overlay_transitions;last_serial=0;
+  }
+  FrameGenerationBatch RecordNativeFrame(VkCommandBuffer cmd,const FrameGenerationSource& source,uint32_t mhz) {
+    ++calls; actual_mhz=mhz;
+    if(!enabled||disabled||source.native_serial==last_serial)return {};
+    last_serial=source.native_serial;
+    state->buffers[Id(cmd)].optional=true;
+    if(int(calls)==state->off_on_record)rex::platform::prospero::ToggleFrameGenerationForSession();
+    if(int(calls)==state->pair_on_record) {
+      rex::platform::prospero::ToggleFrameGenerationForSession();
+      rex::platform::prospero::ToggleFrameGenerationForSession();
+    }
+    if(throws) throw std::runtime_error("injected recording failure");
+    FrameGenerationBatch batch;batch.count=count;batch.discard_recording=discard;
+    for(size_t i=0;i<batch.frames.size();++i)batch.frames[i]={H<VkImage>(2000+i),H<VkImageView>(2000+i),source.extent};
+    if(invalid)batch.frames[0].view={};
+    return batch;
+  }
+  void NotifySubmissionFailure(){++failures;disabled=true;}
+  bool IsUnavailable() const{return disabled;}
+  void NotifyFramePresented(bool generated,bool success){state->notified.emplace_back(generated,success);}
+};
+struct Presenter {
+@@PAINT_CONFIG@@
+@@PAINT_RESULT@@
+@@PAINT_TYPES@@
+};
+struct VulkanUIDrawContext {template<class... A> explicit VulkanUIDrawContext(A&&...) {}};
+struct VulkanPresenter : Presenter {
+  static constexpr size_t kGuestOutputMailboxSize=3;
+  static constexpr VkFormat kGuestOutputFormat=VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+  static constexpr VkPipelineStageFlagBits kGuestOutputInternalStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  static constexpr VkAccessFlags kGuestOutputInternalAccessMask=VK_ACCESS_SHADER_READ_BIT;
+  static constexpr VkImageLayout kGuestOutputInternalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VulkanDevice device_;
+  const VulkanDevice* vulkan_device_=&device_;
+  struct GuestOutputImage {
+    VkExtent2D size{3840,2160}; uintptr_t identity=1000;
+    VkImage image() const{return H<VkImage>(identity);}
+    VkImageView view() const{return H<VkImageView>(identity);}
+    VkExtent2D extent() const{return size;}
+    static std::unique_ptr<GuestOutputImage> Create(const VulkanDevice*,uint32_t w,uint32_t h){auto p=std::make_unique<GuestOutputImage>();p->size={w,h};return p;}
+  };
+  struct GuestOutputImageInstance {std::shared_ptr<GuestOutputImage> image;bool ever_successfully_refreshed=true;uint64_t native_serial=1,native_time_ns=1000000000;};
+@@PAINT_BATCH@@
+@@RECT_CONSTANTS@@
+@@LAYOUT_ENUM@@
+  static auto GetGuestOutputPaintPipelineLayoutIndex(GuestOutputPaintEffect){return kGuestOutputPaintPipelineLayoutIndexBilinear;}
+  struct PaintContext {
+    static constexpr size_t kSubmissionCount=3;
+    explicit PaintContext(const VulkanDevice* device):submission_tracker(device){}
+@@DESCRIPTOR_ENUM@@
+    struct Submission {
+      uintptr_t slot;
+      VkCommandPool draw_command_pool() const{return H<VkCommandPool>(100+slot);}
+      VkCommandBuffer draw_command_buffer() const{return H<VkCommandBuffer>(200+slot);}
+      VkSemaphore acquire_semaphore() const{return H<VkSemaphore>(300+slot);}
+      VkSemaphore present_semaphore() const{return H<VkSemaphore>(400+slot);}
+    };
+    struct GuestOutputPaintPipeline {VkPipeline intermediate_pipeline=H<VkPipeline>(1),swapchain_pipeline=H<VkPipeline>(1);VkFormat swapchain_format=VK_FORMAT_R8G8B8A8_UNORM;};
+    struct UISetupCommandBuffer {VkCommandBuffer command_buffer;uint64_t last_usage_submission_index=0;};
+    struct SwapchainFramebuffer {VkFramebuffer framebuffer=H<VkFramebuffer>(1);};
+    std::array<std::unique_ptr<Submission>,3> submissions;
+    VulkanSubmissionTracker submission_tracker;
+    uint64_t submission_wait_failures=0,submission_wait_last_log_ns=0;
+    bool frame_generation_native_fallback_logged=false;
+    bool frame_generation_initialization_failed=false;
+    uint64_t frame_generation_request_revision=UINT64_MAX;
+    std::array<std::shared_ptr<GuestOutputImage>,3> frame_generation_source_refs;
+    VkSwapchainKHR swapchain=H<VkSwapchainKHR>(1);
+    VkExtent2D swapchain_extent{3840,2160};
+    VkRenderPass swapchain_render_pass=H<VkRenderPass>(1);
+    VkFormat swapchain_render_pass_format=VK_FORMAT_R8G8B8A8_UNORM;
+    bool swapchain_render_pass_clear_load_op=true;
+    std::array<SwapchainFramebuffer,3> swapchain_framebuffers;
+    std::array<std::pair<uint64_t,std::shared_ptr<GuestOutputImage>>,3> guest_output_image_paint_refs;
+    std::array<VkDescriptorSet,kGuestOutputDescriptorSetCount> guest_output_descriptor_sets;
+    std::array<std::unique_ptr<GuestOutputImage>,kMaxGuestOutputPaintEffects-1> guest_output_intermediate_images;
+    std::array<VkFramebuffer,kMaxGuestOutputPaintEffects-1> guest_output_intermediate_framebuffers{};
+    std::array<GuestOutputPaintPipeline,size_t(GuestOutputPaintEffect::kCount)> guest_output_paint_pipelines;
+    uint64_t guest_output_intermediate_image_last_submission=0,guest_output_image_paint_last_submission=0;
+    std::vector<UISetupCommandBuffer> ui_setup_command_buffers;
+    size_t ui_setup_command_buffer_current_index=SIZE_MAX;
+    uint32_t present_queue_family=0;
+  } paint_context_{vulkan_device_};
+  std::unique_ptr<ProsperoFrameGenerator> prospero_frame_generator_;
+  std::array<GuestOutputImageInstance,3> guest_output_images_;
+  VulkanSubmissionTracker ui_submission_tracker_{vulkan_device_};
+  VkRenderPass guest_output_intermediate_render_pass_=H<VkRenderPass>(1);
+  std::array<VkShaderModule,size_t(GuestOutputPaintEffect::kCount)> guest_output_paint_fs_;
+  std::array<VkPipelineLayout,kGuestOutputPaintPipelineLayoutCount> guest_output_paint_pipeline_layouts_;
+  VulkanPresenter(bool fg=true) {
+    using namespace rex::platform::prospero;
+    service.Initialize(LiveSetting::kPresentEffect,0);service.Initialize(LiveSetting::kFsrSharpnessReduction,200);
+    for(size_t i=0;i<3;++i){paint_context_.submissions[i]=std::make_unique<PaintContext::Submission>(i);guest_output_images_[i].image=std::make_shared<GuestOutputImage>();}
+    for(size_t i=0;i<paint_context_.guest_output_descriptor_sets.size();++i)paint_context_.guest_output_descriptor_sets[i]=H<VkDescriptorSet>(500+i);
+    guest_output_paint_fs_.fill(H<VkShaderModule>(1));guest_output_paint_pipeline_layouts_.fill(H<VkPipelineLayout>(1));
+    if(fg)prospero_frame_generator_=std::make_unique<ProsperoFrameGenerator>();
+    else state->startup_fg=state->requested_fg=false;
+    state->require_consumer_lock=fg;
+  }
+  std::unique_lock<std::mutex> ConsumeGuestOutput(uint32_t& index,GuestOutputProperties* properties,GuestOutputPaintConfig* config) {
+    ++state->consume;std::unique_lock lock(state->consumer);index=0;
+    *properties=GuestOutputProperties();properties->frontbuffer_width=3840;properties->frontbuffer_height=2160;
+    properties->display_aspect_ratio_x=16;properties->display_aspect_ratio_y=9;*config=GuestOutputPaintConfig();return lock;
+  }
+  GuestOutputPaintFlow GetGuestOutputPaintFlow(const GuestOutputProperties& properties,uint32_t w,uint32_t h,uint32_t,uint32_t,const GuestOutputPaintConfig&) {
+    GuestOutputPaintFlow f{};f.properties=properties;f.effect_count=1;f.effects[0]=GuestOutputPaintEffect::kBilinear;f.effect_output_sizes[0]={w,h};return f;
+  }
+  VkPipeline CreateGuestOutputPaintPipeline(GuestOutputPaintEffect,VkRenderPass){return state->fail_pipeline?VK_NULL_HANDLE:H<VkPipeline>(1);}
+  void ExecuteUIDrawersFromUIThread(VulkanUIDrawContext&) {
+    ++state->ui;
+    if(state->change_setting_in_ui)rex::platform::prospero::service.Request(rex::platform::prospero::LiveSetting::kPresentEffect,1);
+  }
+  PaintResult PaintAndPresentImpl(bool execute_ui_drawers);
+  PaintResult PaintAndPresentSingleImpl(bool execute_ui_drawers,ProsperoPaintBatch* batch=nullptr,uint32_t index=0);
+};
+@@WRAPPER@@
+@@SINGLE@@
+
+int main() {
+  using Result=Presenter::PaintResult;
+  using namespace rex::platform::prospero;
+  {
+    Harness test;state=&test;VulkanPresenter presenter;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    // Reproduce the console trace: two successful paints have completed before
+    // the third paint reaches its never-used submission slot (index zero).
+    test.CompleteThrough(test.queued);
+    assert(presenter.paint_context_.submission_tracker.GetCurrentSubmission()==3);
+    const auto third_paint_result=presenter.PaintAndPresentImpl(false);
+    assert(third_paint_result==Result::kPresented);
+    assert(test.present==3 && !presenter.prospero_frame_generator_->IsUnavailable());
+    for(unsigned frame=0;frame<240;++frame) {
+      test.CompleteThrough(test.queued);
+      ++presenter.guest_output_images_[0].native_serial;
+      assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    }
+    assert(test.present==243 && !presenter.prospero_frame_generator_->IsUnavailable());
+  }
+  std::cout<<"PASS real tracker with first two fences complete: third paint and 240 further paints keep presenting without false unavailability or surface invalidation\n";
+  for(unsigned count=0;count<=3;++count) {
+    Harness test;state=&test;VulkanPresenter presenter;presenter.prospero_frame_generator_->count=count;
+    const auto host_before=g_host_presents.load();
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.acquire==count+1 && test.submit==count+1 && test.present==count+1 && test.ui==0 && test.consume==1);
+    assert(g_host_presents.load()-host_before==count+1);
+    for(unsigned i=0;i<count;++i)assert(Id(test.submitted[i].drawn)==2000+i && test.notified[i]==std::make_pair(true,true));
+    assert(Id(test.submitted.back().drawn)==1000 && test.notified.back()==std::make_pair(false,true));
+    assert(presenter.prospero_frame_generator_->actual_mhz==119880);
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented); // Same native serial: one redraw.
+    assert(test.present==count+2 && test.ui==0 && test.consume==2);
+  }
+  std::cout<<"PASS actual presenter batches 0..3 generated frames before native; one mailbox acquisition; real present counting; duplicate native serial redraw\n";
+  for(unsigned mode=0;mode<4;++mode) {
+    Harness test;state=&test;VulkanPresenter presenter;auto& generator=*presenter.prospero_frame_generator_;
+    generator.count=mode==3?4:2;generator.discard=mode==0;generator.throws=mode==1;generator.invalid=mode==2;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.acquire==1 && test.reset==2 && test.begin==2 && test.submit==1 && test.ui==0);
+    assert(!test.submitted[0].optional && Id(test.submitted[0].drawn)==1000 && generator.disabled);
+  }
+  std::cout<<"PASS discarded/throwing/invalid/oversized FG recordings reset and rebegin the same acquired native paint; no abandoned optional commands submitted\n";
+  for(unsigned mode=0;mode<4;++mode) {
+    Harness test;state=&test;VulkanPresenter presenter;auto& generator=*presenter.prospero_frame_generator_;
+    generator.count=mode==0?0:2; // Submission failure must invalidate warmup too.
+    if(mode==0)test.fail_submit=0;if(mode==1)test.fail_present=0;
+    if(mode==2)test.fail_end=0;if(mode==3)test.fail_acquire=0;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kNotPresentedConnectionOutdated);
+    assert(generator.disabled && generator.failures && test.ui<=1 && test.consume==1);
+    assert(test.present<=1);
+    // Simulate the caller reconnecting the outdated swapchain. The next real
+    // presenter invocation must use the native path, not stale FG history.
+    test.acquired=false;test.present_signaled=false;
+    test.fail_submit=test.fail_present=test.fail_acquire=test.fail_end=-1;
+    ++presenter.guest_output_images_[0].native_serial;
+    const auto generation_calls=generator.calls;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(!test.submitted.back().optional && Id(test.submitted.back().drawn)==1000);
+    assert(generator.calls==generation_calls); // The batch path is bypassed.
+  }
+  std::cout<<"PASS submit/present/end/acquire failures abort and invalidate generation, including warmup; native presentation resumes after surface recovery\n";
+  for(unsigned after_acquire=0;after_acquire<2;++after_acquire) {
+    for(unsigned fail_begin=0;fail_begin<2;++fail_begin) {
+      Harness test;state=&test;VulkanPresenter presenter;
+      auto& generator=*presenter.prospero_frame_generator_;
+      generator.discard=after_acquire;
+      if(fail_begin)test.fail_begin=after_acquire;else test.fail_reset=after_acquire;
+      const auto result=presenter.PaintAndPresentImpl(false);
+      assert(result==(after_acquire?Result::kNotPresentedConnectionOutdated:Result::kNotPresented));
+      assert(test.acquire==after_acquire && !test.submit && generator.IsUnavailable());
+      // After acquisition, surface retirement releases the abandoned image.
+      // Before acquisition, no surface recovery is needed at all.
+      test.acquired=false;test.present_signaled=false;
+      test.fail_begin=test.fail_reset=-1;
+      const auto generation_calls=generator.calls;
+      assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+      assert(generator.calls==generation_calls && !test.submitted.back().optional);
+    }
+  }
+  std::cout<<"PASS reset/begin failures before acquire preserve the surface; discard recovery failures after acquire retire the acquired image; both resume via the native bypass\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter;presenter.prospero_frame_generator_->count=3;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    presenter.guest_output_images_[0].native_serial=2;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.present==8 && test.ui==0 && !test.waited.empty());
+    const auto resets=test.reset;test.fail_wait=true;presenter.guest_output_images_[0].native_serial=3;
+    const auto acquisitions=test.acquire;
+    const auto refs=presenter.paint_context_.frame_generation_source_refs;
+    auto* generator=presenter.prospero_frame_generator_.get();
+    assert(presenter.PaintAndPresentImpl(false)==Result::kNotPresented);
+    assert(test.reset==resets); // No descriptor/source reuse after an unproven fence.
+    assert(test.acquire==acquisitions && refs==presenter.paint_context_.frame_generation_source_refs);
+    assert(generator->IsUnavailable());
+    const auto generation_calls=generator->calls;
+    // Repeated native fallback retries still cannot reuse a pending slot. They
+    // must not request surface recovery or destroy the FG object/resources.
+    for(unsigned retry=0;retry<8;++retry) {
+      assert(presenter.PaintAndPresentImpl(false)==Result::kNotPresented);
+      assert(test.reset==resets && test.acquire==acquisitions);
+      assert(refs==presenter.paint_context_.frame_generation_source_refs);
+      assert(presenter.prospero_frame_generator_.get()==generator);
+    }
+    assert(test.errors.size()==1); // Repeated failures do not flood the log.
+    test.tick+=6000000000;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kNotPresented);
+    assert(test.errors.size()==2); // A continuing failure is still observable.
+    test.fail_wait=false;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(generator->calls==generation_calls && !test.submitted.back().optional);
+    assert(test.reset==resets+1 && test.acquire==acquisitions+1);
+    assert(!presenter.paint_context_.submission_wait_failures);
+  }
+  std::cout<<"PASS real tracker wait failure defers FG and native fallback without surface invalidation/reset/source release; fence recovery resumes one native paint without re-entering generation\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter;test.change_setting_in_ui=true;
+    assert(presenter.PaintAndPresentImpl(true)==Result::kPresented);
+    assert(service.Requested(LiveSetting::kPresentEffect).version()>service.Applied(LiveSetting::kPresentEffect).version());
+    assert(service.Applied(LiveSetting::kPresentEffect).value()==0);
+  }
+  {
+    Harness test;state=&test;VulkanPresenter presenter;test.fail_pipeline=true;
+    for(auto& pipeline:presenter.paint_context_.guest_output_paint_pipelines)pipeline.swapchain_pipeline={};
+    auto weak=std::weak_ptr(presenter.guest_output_images_[0].image);
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(service.Rejected(LiveSetting::kPresentEffect).packed==service.Requested(LiveSetting::kPresentEffect).packed);
+    assert(test.notified.back()==std::make_pair(false,false));
+    presenter.guest_output_images_[0].image.reset();
+    for(auto& ref:presenter.paint_context_.guest_output_image_paint_refs)ref.second.reset();
+    assert(!weak.expired()); // FG source survives even though final effect did not draw.
+    test.CompleteThrough(test.queued);
+    presenter.paint_context_.frame_generation_source_refs[1].reset();
+    assert(weak.expired());
+  }
+  std::cout<<"PASS real paint acknowledges only the captured setting, rejects failed final effects, and retains recorded FG native source independently of successful drawing\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter;auto& generator=*presenter.prospero_frame_generator_;
+    generator.count=3;
+    assert(presenter.PaintAndPresentImpl(true)==Result::kPresented);
+    assert(presenter.PaintAndPresentImpl(true)==Result::kPresented);
+    assert(test.present==2 && test.ui==2 && generator.calls==0 && generator.overlay_transitions==1);
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.present==6 && test.ui==2 && generator.calls==1 && generator.overlay_transitions==2);
+  }
+  std::cout<<"PASS overlay visibility suspends all generated presents, draws native/UI once per tick, and notifies resume even across a short gap\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter(false);
+    for(unsigned frame=0;frame<5;++frame)assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(!presenter.prospero_frame_generator_ && test.generator_constructions==0);
+    assert(ToggleFrameGenerationForSession());
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    auto* generator=presenter.prospero_frame_generator_.get();
+    assert(generator && generator->enabled && generator->calls==1 && !test.startup_fg);
+    assert(test.generator_constructions==1);
+    assert(!ToggleFrameGenerationForSession());
+    const auto calls=generator->calls;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(generator->calls==calls && !generator->enabled && !test.submitted.back().optional);
+    assert(presenter.prospero_frame_generator_.get()==generator);
+    assert(ToggleFrameGenerationForSession());
+    ++presenter.guest_output_images_[0].native_serial;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(generator->calls==calls+1 && generator->history_resets>=3);
+    assert(test.generator_constructions==1 && !test.startup_fg);
+  }
+  std::cout<<"PASS saved-OFF starts with no generator; session ON lazily creates once; OFF uses native bypass and subsequent ON resets history without changing saved startup state\n";
+  for(bool pair : {false,true}) {
+    Harness test;state=&test;VulkanPresenter presenter;
+    auto& generator=*presenter.prospero_frame_generator_;generator.count=3;
+    if(pair)test.pair_on_present=0;else test.off_on_present=0;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.present==2 && test.consume==1 && generator.calls==1);
+    assert(Id(test.submitted[0].drawn)==2000 && Id(test.submitted[1].drawn)==1000);
+    assert(generator.history_resets==2 && !generator.disabled && generator.enabled==pair);
+    ++presenter.guest_output_images_[0].native_serial;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(generator.calls==(pair?2u:1u));
+  }
+  std::cout<<"PASS OFF and OFF+ON between generated presents skip remaining extras, retain one mailbox source, present native and notify history reset even with final state ON\n";
+  for(bool pair : {false,true}) {
+    Harness test;state=&test;VulkanPresenter presenter;
+    auto& generator=*presenter.prospero_frame_generator_;generator.count=3;
+    if(pair)test.pair_on_record=1;else test.off_on_record=1;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.present==1 && test.acquire==1 && test.submit==1 && test.reset==1);
+    assert(test.submitted[0].optional && Id(test.submitted[0].drawn)==1000);
+    assert(generator.history_resets==2 && generator.enabled==pair && !generator.disabled);
+    assert(presenter.paint_context_.frame_generation_source_refs[1]);
+  }
+  std::cout<<"PASS requests arriving during optional recording preserve recorded commands/layouts and references but present only native, with no abandoned acquire or command reset\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter;
+    auto& generator=*presenter.prospero_frame_generator_;generator.count=3;
+    test.off_on_record=1;test.fail_submit=0;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kNotPresentedConnectionOutdated);
+    assert(!generator.enabled && generator.IsUnavailable());
+    test.acquired=false;test.present_signaled=false;test.fail_submit=-1;
+    assert(ToggleFrameGenerationForSession());
+    const auto calls=generator.calls;
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(generator.IsUnavailable() && generator.calls==calls && !test.submitted.back().optional);
+  }
+  std::cout<<"PASS OFF during recording cannot hide submission failure; a later ON keeps terminal fallback and does not trust failed temporal history\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter(false);
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    test.fail_generator_constructor=true;
+    assert(ToggleFrameGenerationForSession());
+    for(unsigned frame=0;frame<12;++frame)assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.generator_constructions==1 && !presenter.prospero_frame_generator_);
+    assert(!ToggleFrameGenerationForSession());assert(ToggleFrameGenerationForSession());
+    assert(presenter.PaintAndPresentImpl(false)==Result::kPresented);
+    assert(test.generator_constructions==1 && presenter.paint_context_.frame_generation_initialization_failed);
+  }
+  std::cout<<"PASS constructor failure preserves native presentation and cannot cause per-frame allocation retries or unsafe reactivation\n";
+  {
+    Harness test;state=&test;VulkanPresenter presenter(false);
+    assert(presenter.PaintAndPresentImpl(true)==Result::kPresented);
+    assert(test.consume==1 && test.present==1 && test.ui==1 && test.reset==1);
+    assert(!test.submitted[0].optional);
+  }
+  std::cout<<"PASS disabled frame generation follows one native paint with no optional recording\n";
+}

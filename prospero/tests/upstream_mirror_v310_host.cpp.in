@@ -1,0 +1,264 @@
+// Exact allocation/use/shutdown methods are inserted by run_upstream_v310_host.py.
+// Vulkan device operations, memory allocation and the CP boundary are controlled
+// sinks. This checks lifecycle/barrier decisions, not execution by a GPU.
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+#include <vulkan/vulkan.h>
+#include <fmt/format.h>
+
+void Check(bool value, const char* why) {
+  if (!value) { std::fprintf(stderr, "FAIL %s\n", why); std::abort(); }
+}
+template<class... T> void Log(const T&...) {}
+#define REXGPU_INFO(...) Log(__VA_ARGS__)
+#define REXGPU_ERROR(...) Log(__VA_ARGS__)
+#define assert_true(value) Check(value, #value)
+#define assert_unhandled_case(...) Check(false, "unexpected switch case")
+#define REXCVAR_GET(name) flag_##name
+bool flag_gpu_memory_mirror_on_demand = !REX_PLATFORM_PROSPERO;
+bool flag_vulkan_sparse_shared_memory = true;
+bool flag_vulkan_sparse_scaled_resolve_buffer = true;
+
+struct Driver {
+  unsigned creates = 0, allocates = 0, destroys = 0, frees = 0;
+  bool fail_create = false, fail_allocate = false, fail_bind = false;
+  bool sparse_supported = true;
+  uint32_t memory_types = 1;
+  uintptr_t next = 16;
+  std::set<VkBuffer> buffers;
+  std::set<VkDeviceMemory> memories;
+  VkDeviceSize last_size = 0;
+} driver;
+VkResult CreateBuffer(VkDevice, const VkBufferCreateInfo* info,
+                      const VkAllocationCallbacks*, VkBuffer* out) {
+  ++driver.creates;
+  if (driver.fail_create) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  *out = reinterpret_cast<VkBuffer>(++driver.next);
+  driver.last_size = info->size;
+  Check(driver.buffers.insert(*out).second, "unique buffer");
+  return VK_SUCCESS;
+}
+void DestroyBuffer(VkDevice, VkBuffer buffer, const VkAllocationCallbacks*) {
+  if (!buffer) return;
+  Check(driver.buffers.erase(buffer) == 1, "destroy live buffer exactly once");
+  ++driver.destroys;
+}
+void Requirements(VkDevice, VkBuffer, VkMemoryRequirements* requirements) {
+  *requirements = {driver.last_size, 65536, driver.memory_types};
+}
+VkResult AllocateMemory(VkDevice, const VkMemoryAllocateInfo*,
+                        const VkAllocationCallbacks*, VkDeviceMemory* out) {
+  ++driver.allocates;
+  if (driver.fail_allocate) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  *out = reinterpret_cast<VkDeviceMemory>(++driver.next);
+  Check(driver.memories.insert(*out).second, "unique memory");
+  return VK_SUCCESS;
+}
+void FreeMemory(VkDevice, VkDeviceMemory memory, const VkAllocationCallbacks*) {
+  if (!memory) return;
+  Check(driver.memories.erase(memory) == 1, "free live memory exactly once");
+  ++driver.frees;
+}
+VkResult BindBufferMemory(VkDevice, VkBuffer, VkDeviceMemory, VkDeviceSize) {
+  return driver.fail_bind ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_SUCCESS;
+}
+
+namespace rex {
+template<class T> T align(T value, T alignment) { return (value + alignment - 1) & ~(alignment - 1); }
+template<class T> bool bit_scan_forward(T value, uint32_t* bit) {
+  if (!value) return false;
+  *bit = std::countr_zero(value); return true;
+}
+template<class T> uint32_t log2_ceil(T value) { return std::bit_width(value - 1); }
+namespace ui::vulkan {
+struct VulkanDevice {
+  struct Functions {
+    decltype(&CreateBuffer) vkCreateBuffer = CreateBuffer;
+    decltype(&DestroyBuffer) vkDestroyBuffer = DestroyBuffer;
+    decltype(&Requirements) vkGetBufferMemoryRequirements = Requirements;
+    decltype(&AllocateMemory) vkAllocateMemory = AllocateMemory;
+    decltype(&FreeMemory) vkFreeMemory = FreeMemory;
+    decltype(&BindBufferMemory) vkBindBufferMemory = BindBufferMemory;
+  } fn;
+  struct Properties { bool sparseResidencyBuffer; };
+  struct MemoryTypes { uint32_t device_local; };
+  struct Extensions { bool ext_1_1_KHR_dedicated_allocation = true; };
+  const Functions& functions() const { return fn; }
+  VkDevice device() const { return reinterpret_cast<VkDevice>(1); }
+  Properties properties() const { return {driver.sparse_supported}; }
+  MemoryTypes memory_types() const { return {1}; }
+  Extensions extensions() const { return {}; }
+};
+struct VulkanUploadBufferPool {
+  static constexpr size_t kDefaultPageSize = 65536;
+  inline static unsigned live = 0;
+  VulkanUploadBufferPool(const VulkanDevice*, VkBufferUsageFlags, size_t) { ++live; }
+  ~VulkanUploadBufferPool() { --live; }
+};
+namespace util {
+enum class MemoryPurpose { kDeviceLocal };
+template<class F, class T> void DestroyAndNullHandle(F destroy, VkDevice device, T& handle) {
+  if (handle) { destroy(device, handle, nullptr); handle = VK_NULL_HANDLE; }
+}
+bool CreateDedicatedAllocationBuffer(const VulkanDevice* device, VkDeviceSize size,
+                                     VkBufferUsageFlags usage, MemoryPurpose, VkBuffer& buffer,
+                                     VkDeviceMemory& memory, uint32_t* type,
+                                     VkDeviceSize* resident) {
+  VkBufferCreateInfo create{}; create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  create.size = size; create.usage = usage;
+  if (CreateBuffer(device->device(), &create, nullptr, &buffer) != VK_SUCCESS) return false;
+  VkMemoryAllocateInfo allocation{}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  allocation.allocationSize = size;
+  if (AllocateMemory(device->device(), &allocation, nullptr, &memory) != VK_SUCCESS) {
+    DestroyAndNullHandle(DestroyBuffer, device->device(), buffer); return false;
+  }
+  if (BindBufferMemory(device->device(), buffer, memory, 0) != VK_SUCCESS) {
+    DestroyAndNullHandle(DestroyBuffer, device->device(), buffer);
+    FreeMemory(device->device(), memory, nullptr); memory = VK_NULL_HANDLE; return false;
+  }
+  if (type) *type = 0;
+  if (resident) *resident = size;
+  return true;
+}
+} // namespace util
+} // namespace ui::vulkan
+} // namespace rex
+namespace ui = rex::ui;
+
+struct NativeGpuDiagnostics {
+  enum class Dependency { kMemoryMirror, kScaledMirrorWrite };
+  enum class Allocation { kMemoryMirror, kScaledMirror };
+  void RecordDependency(Dependency, uint64_t, const char*) {}
+  void RecordAllocation(Allocation, uint64_t, uint64_t) {}
+};
+struct Processor {
+  ui::vulkan::VulkanDevice device;
+  NativeGpuDiagnostics diagnostics;
+  const ui::vulkan::VulkanDevice* GetVulkanDevice() const { return &device; }
+  NativeGpuDiagnostics& native_gpu_diagnostics() { return diagnostics; }
+};
+
+class VulkanSharedMemory {
+ public:
+  enum class Usage { kTransferDestination };
+  static constexpr uint32_t kBufferSizeLog2 = 29, kBufferSize = 1u << kBufferSizeLog2;
+  static constexpr uint32_t kHostGpuMemoryOptimalSparseAllocationLog2 = 22;
+  Processor command_processor_;
+  bool buffer_deferred_ = false, streamed_page_shadows_supported_ = false;
+  bool common_initialized = false, sparse_initialized = false;
+  VkBuffer buffer_ = VK_NULL_HANDLE;
+  uint32_t buffer_memory_type_ = UINT32_MAX;
+  std::vector<VkDeviceMemory> buffer_memory_;
+  std::unique_ptr<ui::vulkan::VulkanUploadBufferPool> upload_buffer_pool_;
+  Usage last_usage_ = Usage::kTransferDestination;
+  std::pair<uint32_t,uint32_t> last_written_range_{};
+  uint32_t page_size_log2() const { return 14; }
+  void InitializeCommon() { common_initialized = true; }
+  void ShutdownCommon() { common_initialized = false; }
+  void InitializeSparseHostGpuMemory(uint32_t) { sparse_initialized = true; }
+  void ResetTraceDownload() {}
+  std::string DescribeCodeAddress(const void*) { return "fixture"; }
+  bool Initialize();
+  bool EnsureHostBuffer();
+  bool CreateBuffer();
+  void DestroyBuffer();
+  void Shutdown(bool from_destructor = false);
+};
+class VulkanTextureCache {
+ public:
+  Processor command_processor_;
+  VkBuffer scaled_resolve_buffer_ = VK_NULL_HANDLE;
+  uint64_t scaled_resolve_buffer_size_ = 0;
+  bool scaled_resolve_buffer_sparse_ = false, scaled_resolve_buffer_deferred_ = false;
+  uint32_t scaled_resolve_buffer_memory_type_ = UINT32_MAX;
+  std::vector<VkDeviceMemory> scaled_resolve_buffer_memory_;
+  uint32_t scaled_resolve_sparse_granularity_log2_ = UINT32_MAX;
+  std::vector<uint64_t> scaled_resolve_sparse_allocated_;
+  bool scaled_resolve_last_usage_write_ = false;
+  std::pair<uint64_t,uint64_t> scaled_resolve_last_written_range_{};
+  bool IsDrawResolutionScaled() const { return true; }
+  uint32_t draw_resolution_scale_x() const { return 3; }
+  uint32_t draw_resolution_scale_y() const { return 3; }
+  @SCALED_DECLARATION@
+  void ShutdownScaledResolveBuffer();
+};
+using SharedMemory = VulkanSharedMemory;
+@METHODS@
+
+void ResetDriver() {
+  Check(driver.buffers.empty() && driver.memories.empty(), "all fake resources released");
+  Check(ui::vulkan::VulkanUploadBufferPool::live == 0, "all upload pools released");
+  driver = {};
+}
+void SharedCase(bool deferred, bool sparse, int failure) {
+  ResetDriver();
+  flag_gpu_memory_mirror_on_demand = deferred;
+  driver.sparse_supported = sparse;
+  driver.fail_create = failure == 1;
+  driver.fail_allocate = failure == 2;
+  driver.fail_bind = failure == 3;
+  driver.memory_types = failure == 4 ? 0 : 1;
+  VulkanSharedMemory memory;
+  bool initialized = memory.Initialize();
+  if (deferred) Check(initialized && driver.creates == 0, "defer without allocating buffer");
+  else Check(initialized == !failure, "eager failure returned to setup");
+  bool ready = memory.EnsureHostBuffer();
+  Check(ready == !failure, "first-use allocation status propagated");
+  const auto creates = driver.creates;
+  Check(memory.EnsureHostBuffer() == !failure && creates == driver.creates,
+        "success and failure are stable without repeated allocation");
+  if (!failure) {
+    Check(memory.buffer_ && memory.streamed_page_shadows_supported_, "ready mirror supports snapshots");
+    Check(memory.sparse_initialized == sparse, "selected sparse policy");
+    Check(driver.allocates == (sparse ? 0u : 1u), "non-sparse memory allocated exactly once");
+  } else {
+    Check(!memory.buffer_ && memory.buffer_memory_.empty(), "failed allocation cleans native handles");
+  }
+  memory.Shutdown();
+  memory.Shutdown();
+  Check(!memory.common_initialized, "partial and repeated shutdown release callback owner");
+  ResetDriver();
+  std::printf("PASS shared deferred=%u sparse=%u failure=%d\n", deferred, sparse, failure);
+}
+void ScaledCase(bool sparse, int failure) {
+  ResetDriver();
+  driver.sparse_supported = sparse;
+  driver.fail_create = failure == 1;
+  driver.fail_allocate = failure == 2;
+  driver.fail_bind = failure == 3;
+  VulkanTextureCache texture;
+  bool initialized = texture.InitializeScaledResolveBuffer();
+#if REX_PLATFORM_PROSPERO
+  Check(initialized == !failure, "PS5 scaled allocation failure reaches setup");
+  if (!failure) {
+    Check(texture.scaled_resolve_buffer_ && !texture.scaled_resolve_buffer_deferred_,
+          "PS5 scaled address space exists at setup");
+    Check(driver.last_size == uint64_t(9) * SharedMemory::kBufferSize, "3x dimensions mean 9x bytes");
+    Check(texture.scaled_resolve_buffer_sparse_ == sparse, "PS5 sparse/eager fallback selected");
+  }
+#else
+  Check(initialized && texture.scaled_resolve_buffer_deferred_ && driver.creates == 0,
+        "upstream default remains on demand");
+#endif
+  texture.ShutdownScaledResolveBuffer();
+  texture.ShutdownScaledResolveBuffer();
+  ResetDriver();
+  std::printf("PASS scaled platform=%u sparse=%u failure=%d\n", REX_PLATFORM_PROSPERO, sparse, failure);
+}
+int main() {
+  for (bool deferred : {false, true}) {
+    SharedCase(deferred, true, 0);
+    for (int failure = 0; failure <= 4; ++failure) SharedCase(deferred, false, failure);
+  }
+  ScaledCase(true, 0);
+  for (int failure = 0; failure <= 3; ++failure) ScaledCase(false, failure);
+  return 0;
+}

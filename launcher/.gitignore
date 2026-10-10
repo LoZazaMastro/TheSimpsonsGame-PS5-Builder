@@ -1,0 +1,13 @@
+# Launcher build artifacts and runtime state (never commit these)
+*.exe
+ffmpeg
+dist/
+build/
+*.spec
+art/
+mods/
+backups/
+launcher.json
+last_exit.txt
+last_run_debug.txt
+__pycache__/

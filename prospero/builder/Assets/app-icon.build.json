@@ -1,0 +1,37 @@
+{
+  "operation": "Windows icon resource packaging from the existing game cover",
+  "source": "cover.png",
+  "source_sha256": "d14c51178d73ed7d3e7b573914132c0989e3b23d3ba0a2a39aaed56b35d6922e",
+  "output": "app.ico",
+  "output_sha256": "5f5678ef01115ee319a8643fe90a8d373fa52379ef451e9807ca783884fdf3fd",
+  "sizes": [
+    [
+      16,
+      16
+    ],
+    [
+      24,
+      24
+    ],
+    [
+      32,
+      32
+    ],
+    [
+      48,
+      48
+    ],
+    [
+      64,
+      64
+    ],
+    [
+      128,
+      128
+    ],
+    [
+      256,
+      256
+    ]
+  ]
+}

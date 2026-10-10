@@ -1,0 +1,115 @@
+/* Host execution of verbatim production WSI functions. VideoOut calls and
+ * time are deterministic test doubles; this does not drive a PS5 display. */
+#define _POSIX_C_SOURCE 200809L
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <threads.h>
+#include <vulkan/vulkan_core.h>
+#include "videoout_abi.h"
+
+@CONSTANTS@
+
+static int open_result = 7, supported_result = 1, high_result = 0, restore_result = 0;
+static unsigned open_calls, supported_calls, high_calls, restore_calls, wait_calls;
+static unsigned failed_wait;
+static uint64_t clock_ns = UINT64_C(1000000000);
+static uint64_t intervals[VIDEOOUT_PERIOD_INTERVALS] = {
+   8341667, 8341667, 8341667, 8341667, 8341667, 8341667
+};
+
+int sceVideoOutOpen(int32_t user, int32_t bus, int32_t index, const void *parameter)
+{
+   assert(user == PS5_VIDEO_OUT_USER_SYSTEM && bus == 0 && index == 0 && parameter == NULL);
+   ++open_calls;
+   return open_result;
+}
+
+int sceVideoOutIsOutputSupported(int32_t handle, uint32_t mode, const void *a, const void *b, const void *c)
+{
+   assert(handle == open_result && mode == PS5_VIDEO_OUT_MODE_HIGH_FRAME_RATE && !a && !b && !c);
+   ++supported_calls;
+   return supported_result;
+}
+
+int sceVideoOutConfigureOutput(int32_t handle, uint32_t mode, const void *a, const void *b, const void *c)
+{
+   assert(handle == open_result && !a && !b && !c);
+   if (mode == PS5_VIDEO_OUT_MODE_HIGH_FRAME_RATE) { ++high_calls; return high_result; }
+   assert(mode == PS5_VIDEO_OUT_MODE_RESTORE);
+   ++restore_calls;
+   return restore_result;
+}
+
+int sceVideoOutWaitVblank(int32_t handle)
+{
+   assert(handle == open_result);
+   ++wait_calls;
+   if (wait_calls == failed_wait) return -19;
+   if (wait_calls > 1) clock_ns += intervals[(wait_calls - 2) % VIDEOOUT_PERIOD_INTERVALS];
+   return 0;
+}
+
+static uint64_t os_time_get_nano(void) { return clock_ns; }
+
+@STATE@
+@FUNCTIONS@
+
+int main(int argc, char **argv)
+{
+   assert(argc == 2);
+   const char *name = argv[1];
+   assert(setenv("SIMPSONS_VIDEOOUT_120HZ", "1", 1) == 0);
+   uint32_t expected_rate = 59940;
+   unsigned expected_supported = 1, expected_high = 0, expected_restore = 0, expected_waits = 0;
+   if (strcmp(name, "default-no-request") == 0) {
+      assert(unsetenv("SIMPSONS_VIDEOOUT_120HZ") == 0); expected_supported = 0;
+   } else if (strcmp(name, "explicit-60") == 0) {
+      assert(setenv("SIMPSONS_VIDEOOUT_120HZ", "0", 1) == 0); expected_supported = 0;
+   } else if (strcmp(name, "invalid-request") == 0) {
+      assert(setenv("SIMPSONS_VIDEOOUT_120HZ", "120", 1) == 0); expected_supported = 0;
+   } else if (strcmp(name, "unsupported-zero") == 0) {
+      supported_result = 0;
+   } else if (strcmp(name, "support-query-failed") == 0) {
+      supported_result = -8;
+   } else if (strcmp(name, "configure-refused") == 0) {
+      high_result = -16; expected_high = 1;
+   } else if (strcmp(name, "measured-120") == 0) {
+      expected_rate = 119880; expected_high = 1; expected_waits = 7;
+   } else if (strcmp(name, "median-rejects-outlier") == 0) {
+      intervals[2] = 100000000; expected_rate = 119880; expected_high = 1; expected_waits = 7;
+   } else if (strcmp(name, "actually-60") == 0) {
+      for (unsigned i = 0; i < VIDEOOUT_PERIOD_INTERVALS; ++i) intervals[i] = 16683334;
+      expected_high = 1; expected_restore = 1; expected_waits = 7;
+   } else if (strcmp(name, "first-wait-failed") == 0) {
+      failed_wait = 1; expected_high = 1; expected_restore = 1; expected_waits = 1;
+   } else if (strcmp(name, "later-wait-failed") == 0) {
+      failed_wait = 4; expected_high = 1; expected_restore = 1; expected_waits = 4;
+   } else if (strcmp(name, "zero-period") == 0) {
+      memset(intervals, 0, sizeof(intervals)); expected_high = 1; expected_restore = 1; expected_waits = 7;
+   } else if (strcmp(name, "restore-failed") == 0) {
+      failed_wait = 1; restore_result = -4; expected_high = 1; expected_restore = 1; expected_waits = 1; expected_rate = 0;
+   } else if (strcmp(name, "open-failed") == 0) {
+      open_result = -5; expected_supported = 0; expected_rate = 0;
+   } else {
+      fprintf(stderr, "Unknown case: %s\n", name); return 2;
+   }
+   const uint32_t actual = simpsons_radv_videoout_refresh_millihertz();
+   assert(actual == expected_rate);
+   assert(videoout_output.high_frame_rate == (expected_rate == 119880));
+   assert(videoout_output.high_mode_offered == (expected_rate == 119880));
+   assert(open_calls == 1 && supported_calls == expected_supported && high_calls == expected_high);
+   assert(restore_calls == expected_restore && wait_calls == expected_waits);
+   // The request is captured for the session. Querying it again must not open,
+   // reconfigure, or repeat physical refresh measurement.
+   assert(setenv("SIMPSONS_VIDEOOUT_120HZ", expected_rate == 119880 ? "0" : "1", 1) == 0);
+   assert(simpsons_radv_videoout_refresh_millihertz() == expected_rate);
+   assert(open_calls == 1 && supported_calls == expected_supported && high_calls == expected_high);
+   assert(restore_calls == expected_restore && wait_calls == expected_waits);
+   printf("PASS WSI %s: output=%u; open=%u; support=%u; high=%u; restore=%u; waits=%u\n",
+          name, actual, open_calls, supported_calls, high_calls, restore_calls, wait_calls);
+   return 0;
+}

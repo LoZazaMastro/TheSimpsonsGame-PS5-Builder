@@ -1,0 +1,32 @@
+# The Simpsons Game PS5 v3.4: obiettivo 4K/60, senza filtri aggiuntivi.
+# Nuovo criterio richiesto: tecniche comuni al port Sonic PS5.
+# Non equivale al renderer Sonic e non certifica prestazioni sulla console.
+prospero_profile_version = 34
+
+fullscreen = true
+resolution = "4k"
+gpu = "vulkan"
+render_target_path_vulkan = "native"
+
+# Simpsons parte da 1280x720: 3x per asse produce 3840x2160.
+# Sonic 1x parte invece da un viewport gia a 3840x2160.
+resolution_scale = 3
+native_rt_original_resolution_targets = ""
+
+# Sonic non applica FSR/CAS/FXAA. Aspetto originale del gioco, anisotropia 16x.
+present_effect = "bilinear"
+swap_post_effect = "none"
+eye_shading = "original"
+ink_outlines = "original"
+ink_outline_color = "000000"
+anisotropic_override = 5
+
+# Il codice PC incluso separa la logica dei menu dal disegno a 60 FPS.
+frame_rate = 60
+menu_frame_rate = 60
+vsync = true
+vulkan_allow_present_mode_immediate = false
+vulkan_allow_present_mode_fifo_relaxed = false
+
+# Default for a new TOML only; migration preserves the existing language.
+user_language = 1

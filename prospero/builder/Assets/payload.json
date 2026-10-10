@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "titleId": "PPSA74207",
+  "gameTitle": "The Simpsons Game",
+  "buildVersion": "3.10",
+  "xboxTitleId": "45410809",
+  "files": [
+    {
+      "path": "eboot.bin",
+      "bytes": 113548093,
+      "sha256": "e159e5cdc9d2efee803f5e6adae3b8ae5c3f7c2c1c22e7fdb3c7ca595dd65b8f"
+    },
+    {
+      "path": "sce_module/libc.prx",
+      "bytes": 1284674,
+      "sha256": "e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036"
+    },
+    {
+      "path": "sce_sys/icon0.png",
+      "bytes": 315694,
+      "sha256": "38a461cd27eaee56a09c626d77ab4415a5d82c8245137d3d5a5e32b54103eece"
+    },
+    {
+      "path": "sce_sys/param.json",
+      "bytes": 889,
+      "sha256": "881c5845f32d7434a6c2aed215ebd5b075fafad466c7b06d9afcbbdead6c6f46"
+    },
+    {
+      "path": "sce_sys/pic0.dds",
+      "bytes": 8294548,
+      "sha256": "463c86d03ddbf53ddf4ca0cbbe531f8f2840cece6c8a56ec8351ec1ca67bfdb1"
+    },
+    {
+      "path": "sce_sys/pic1.dds",
+      "bytes": 8294548,
+      "sha256": "7469f7f47579e0fb8100a179aa6c609cd56b1adcff66da8d78e43d177c258461"
+    },
+    {
+      "path": "sce_sys/snd0.at9",
+      "bytes": 1804200,
+      "sha256": "edc5400d3cb9ff0ba95953128294101a299861116f2513363bd4e8316e893dd4"
+    }
+  ],
+  "emptyDirectories": [
+    "logs",
+    "cache",
+    "userdata"
+  ]
+}

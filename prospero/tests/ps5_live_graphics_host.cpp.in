@@ -1,0 +1,120 @@
+// Production mailbox and extracted guest VSync policy, with deterministic host inputs.
+#include <rex/platform/settings_prospero.h>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+
+namespace rex::platform::prospero {
+LiveSettings test_settings;
+LiveSettings& GetLiveSettings() { return test_settings; }
+}
+namespace platform = rex::platform;
+using namespace rex::platform::prospero;
+
+std::atomic<uint64_t> g_vblank_interval_ticks{0};
+uint64_t delivered_interval = 0;
+void DeliverDueVblanks() { delivered_interval = g_vblank_interval_ticks.load(); }
+void PumpVblankPolicy() {
+  uint64_t vsync_interval_ticks = 16000, no_vsync_interval_ticks = 1000;
+@@VBLANK_POLICY@@
+}
+bool ReadWaitVSync() {
+@@WAIT_POLICY@@
+  return vsync_enabled;
+}
+
+void InitColors() {
+  for (size_t i = 0; i < SwapColorSettingsRequest::kKeys.size(); ++i)
+    test_settings.Initialize(SwapColorSettingsRequest::kKeys[i], SwapColorSettingsRequest::kNeutral[i]);
+}
+int main() {
+  InitColors();
+  auto neutral = SwapColorSettingsRequest::Read(test_settings);
+  assert(!neutral.NeedsPass());
+  float constants[4]{};
+  neutral.WriteConstants(constants);
+  assert(constants[0] == 1.0f && constants[1] == 0.0f && constants[2] == 1.0f && constants[3] == 0.0f);
+  neutral.Complete(test_settings, false, true);
+  for (auto key : SwapColorSettingsRequest::kKeys)
+    assert(test_settings.Applied(key).packed == test_settings.Requested(key).packed);
+  std::cout << "PASS neutral startup is an exact identity and needs no extra pass\n";
+
+  const std::array<int32_t, 4> vivid = {1150, 500, 1100, 20};
+  for (size_t i = 0; i < vivid.size(); ++i)
+    test_settings.Request(SwapColorSettingsRequest::kKeys[i], vivid[i]);
+  const auto captured = SwapColorSettingsRequest::Read(test_settings);
+  assert(captured.NeedsPass());
+  captured.WriteConstants(constants);
+  for (size_t i = 0; i < vivid.size(); ++i) {
+    assert(std::abs(constants[i] - float(vivid[i]) / 1000.0f) < 0.000001f);
+    assert(test_settings.Applied(SwapColorSettingsRequest::kKeys[i]).packed != captured.requests[i].packed);
+  }
+  captured.Complete(test_settings, true, false);
+  for (size_t i = 0; i < vivid.size(); ++i)
+    assert(test_settings.Applied(SwapColorSettingsRequest::kKeys[i]).packed != captured.requests[i].packed);
+  std::cout << "PASS recording and failed submission do not acknowledge four pending colour edits\n";
+
+  // A later UI request cannot alter constants or acknowledgements of a frame
+  // that has already captured its own requests.
+  const auto newer = test_settings.Request(LiveSetting::kColorBrightness, -30);
+  captured.WriteConstants(constants);
+  assert(std::abs(constants[3] - .02f) < .000001f);
+  captured.Complete(test_settings, true, true);
+  assert(test_settings.Applied(LiveSetting::kColorBrightness).packed != newer.packed);
+  const auto current = SwapColorSettingsRequest::Read(test_settings);
+  current.Complete(test_settings, true, true);
+  captured.Complete(test_settings, true, true);
+  assert(test_settings.Applied(LiveSetting::kColorBrightness).packed == newer.packed);
+  std::cout << "PASS per-frame snapshots survive later slider changes and older completions cannot regress acknowledgements\n";
+
+  const auto unavailable = test_settings.Request(LiveSetting::kColorVibrance, 650);
+  const auto failed = SwapColorSettingsRequest::Read(test_settings);
+  failed.Complete(test_settings, false, true);
+  assert(test_settings.Rejected(LiveSetting::kColorVibrance).packed == unavailable.packed);
+  assert(test_settings.Applied(LiveSetting::kColorVibrance).value() == 500);
+  const auto fallback = SwapColorSettingsRequest::Read(test_settings);
+  assert(fallback.values[1] == 500);
+  std::cout << "PASS successful gamma-only fallback rejects unavailable colour requests and retains last usable values\n";
+
+  // A pass used in an earlier frame can fail temporarily and then recover
+  // without a new UI edit. Its matching rejection must stop claiming fallback.
+  const auto applied_saturation = test_settings.Requested(LiveSetting::kColorSaturation);
+  assert(test_settings.Rejected(LiveSetting::kColorSaturation).packed == applied_saturation.packed);
+  const auto recovered = SwapColorSettingsRequest::Read(test_settings);
+  recovered.Complete(test_settings, true, true);
+  assert(!test_settings.Rejected(LiveSetting::kColorSaturation).version());
+  const auto newer_saturation = test_settings.Request(LiveSetting::kColorSaturation, 1200);
+  test_settings.Reject(LiveSetting::kColorSaturation, newer_saturation);
+  test_settings.Acknowledge(LiveSetting::kColorSaturation, applied_saturation);
+  assert(test_settings.Rejected(LiveSetting::kColorSaturation).packed == newer_saturation.packed);
+  test_settings.Acknowledge(LiveSetting::kColorSaturation, newer_saturation);
+  assert(!test_settings.Rejected(LiveSetting::kColorSaturation).version());
+  std::cout << "PASS recovered requests clear their own rejection while late acknowledgements preserve newer failures\n";
+
+  for (size_t i = 0; i < vivid.size(); ++i)
+    test_settings.Request(SwapColorSettingsRequest::kKeys[i], SwapColorSettingsRequest::kNeutral[i]);
+  const auto disabled = SwapColorSettingsRequest::Read(test_settings);
+  assert(!disabled.NeedsPass());
+  disabled.Complete(test_settings, false, true);
+  for (auto key : SwapColorSettingsRequest::kKeys)
+    assert(test_settings.Applied(key).packed == test_settings.Requested(key).packed);
+  std::cout << "PASS restoring neutral colours applies without requiring a colour or FXAA pass\n";
+
+  test_settings.Initialize(LiveSetting::kVSync, false);
+  assert(!ReadWaitVSync() && !test_settings.Applied(LiveSetting::kVSync).version());
+  PumpVblankPolicy();
+  assert(delivered_interval == 1000);
+  const auto enabled = test_settings.Request(LiveSetting::kVSync, true);
+  assert(ReadWaitVSync());
+  assert(test_settings.Applied(LiveSetting::kVSync).packed != enabled.packed);
+  PumpVblankPolicy();
+  assert(delivered_interval == 16000 && test_settings.Applied(LiveSetting::kVSync).packed == enabled.packed);
+  const auto off = test_settings.Request(LiveSetting::kVSync, false);
+  assert(!ReadWaitVSync());
+  PumpVblankPolicy();
+  assert(delivered_interval == 1000 && test_settings.Applied(LiveSetting::kVSync).packed == off.packed);
+  std::cout << "PASS actual guest VSync worker and WAIT policy use the atomic request, with acknowledgement only after timing installation\n";
+}

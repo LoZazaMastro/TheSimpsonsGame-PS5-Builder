@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+publish/
+publish-wpf/
+Assets/payload.zip
+Assets/payload.json
+*.zip.tmp
+*.json.tmp

@@ -1,0 +1,40 @@
+{
+  "ageLevel": {
+    "default": 0
+  },
+  "applicationCategoryType": 0,
+  "applicationDrmType": "free",
+  "attribute": 0,
+  "attribute2": 0,
+  "attribute3": 524352,
+  "conceptId": "74207",
+  "contentBadgeType": 1,
+  "contentId": "UP9000-PPSA74207_00-SIMPSONSRECOMP01",
+  "contentVersion": "00.003.010",
+  "downloadDataSize": 256,
+  "gameIntent": {
+    "permittedIntents": [
+      {
+        "intentType": "launchActivity"
+      }
+    ]
+  },
+  "localizedParameters": {
+    "defaultLanguage": "it-IT",
+    "it-IT": {
+      "titleName": "The Simpsons Game"
+    },
+    "en-US": {
+      "titleName": "The Simpsons Game"
+    }
+  },
+  "masterVersion": "00.01",
+  "pubtools": {
+    "creationDate": "2026-10-10 00:00:00",
+    "toolVersion": "2.00"
+  },
+  "requiredSystemSoftwareVersion": "0x0000000000000000",
+  "sdkVersion": "0x0000000000000000",
+  "titleId": "PPSA74207",
+  "versionFileUri": ""
+}

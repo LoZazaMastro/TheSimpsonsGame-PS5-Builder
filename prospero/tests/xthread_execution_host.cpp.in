@@ -1,0 +1,272 @@
+// The owner, destructor, Exit and Terminate below are extracted verbatim from
+// production xthread.cpp. ReX pthread execution and ThreadState/PPCContext are
+// real. This small guest-object model supplies refcounts, table handles and
+// inactive guest-kernel operations; it is not a model of the PS5 kernel ABI.
+#include <atomic>
+#include <chrono>
+#include <concepts>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <pthread.h>
+#include <thread>
+#include <rex/logging.h>
+#include <rex/system/xtypes.h>
+#include <rex/thread.h>
+#include <rex/platform/trace_phases_prospero.h>
+
+// The complete production ThreadState declaration is inserted unchanged,
+// apart from replacing its unused Memory header with a forward declaration.
+// Its implementation is compiled separately from the real source.
+@THREAD_STATE_HEADER@
+
+#define PROFILE_THREAD_EXIT() ((void)0)
+
+extern "C" int ps5___cxa_thread_atexit_impl(void (*)(void*), void*, void*);
+extern "C" int __real_pthread_cancel(pthread_t);
+extern "C" int __real_pthread_create(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
+static std::atomic<bool> delay_cancel{false}, fail_create{false};
+static pthread_t delayed_target;
+extern "C" int __wrap_pthread_cancel(pthread_t thread) {
+  if (delay_cancel.load()) { delayed_target = thread; return 0; }
+  return __real_pthread_cancel(thread);
+}
+extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
+                                     void* (*start)(void*), void* argument) {
+  if (fail_create.exchange(false)) return EAGAIN;
+  return __real_pthread_create(thread, attributes, start, argument);
+}
+extern "C" void ps5_thread_stacks(unsigned* live, unsigned* cached) { *live = 0; *cached = 0; }
+extern "C" int scePthreadGetaffinity(pthread_t, uint64_t* mask) { *mask = 1; return 0; }
+extern "C" int scePthreadSetaffinity(pthread_t, uint64_t) { return 0; }
+namespace rex {
+LogCategoryId RegisterLogCategory(const char*) { return LogCategoryId(0); }
+spdlog::logger* GetLoggerRaw(LogCategoryId) { return spdlog::default_logger_raw(); }
+}
+
+static std::atomic<unsigned> destroyed{0}, handles_acquired{0}, handles_released{0};
+static std::atomic<unsigned> tls_finished{0}, late_tls_finished{0}, native_finished{0};
+static std::atomic<bool> entered{false}, proceed{false};
+static bool baseline = false;
+static bool test_tls = true;
+static pthread_key_t end_key;
+static const char* mode;
+static void Check(bool condition, const char* message) {
+  if (!condition) { std::fprintf(stderr, "FAIL %s\n", message); std::abort(); }
+}
+static bool Await(const std::function<bool()>& condition) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!condition()) {
+    if (std::chrono::steady_clock::now() >= end) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
+namespace rex::system {
+@OBJECT_REF@
+class XThread;
+thread_local XThread* current_xthread_tls_ = nullptr;
+struct X_KTHREAD {
+  struct { unsigned signal_state = 0; } header;
+  unsigned terminated = 0;
+  int exit_status = 0;
+  uint32_t process = 0;
+  unsigned process_threads = 0;
+};
+struct X_KPROCESS { unsigned thread_list_spinlock = 0; unsigned thread_count = 0; };
+struct GuestMemory {
+  template <typename T> T TranslateVirtual(uint32_t) { static X_KPROCESS process; return reinterpret_cast<T>(&process); }
+  void SystemHeapFree(uint32_t) {}
+};
+struct GuestKernel {
+  GuestMemory storage;
+  void OnThreadExit(XThread*) {}
+  void UnregisterThread(XThread*);
+  GuestMemory* memory() { return &storage; }
+};
+struct GuestFiber { void Destroy() {} };
+static GuestKernel kernel;
+struct DestructionEnd { ~DestructionEnd() { destroyed.fetch_add(1); } };
+
+class XThread {
+ public:
+  // One caller reference plus the guest table's pointer reference.
+  std::atomic<unsigned> pointer_refs{2};
+  std::atomic<unsigned> handle_refs{1};
+  DestructionEnd destruction_end;
+  std::unique_ptr<rex::runtime::ThreadState> thread_state_ =
+      std::make_unique<rex::runtime::ThreadState>(17, 0x12340000, 0x22340000, nullptr);
+  std::unique_ptr<rex::thread::Thread> thread_;
+  GuestKernel* kernel_state_ = &kernel;
+  GuestFiber* main_fiber_ = nullptr;
+  uint32_t scratch_address_ = 0, tls_static_address_ = 0, pcr_address_ = 0;
+  uint32_t thread_id_ = 17;
+  std::atomic<bool> running_{true};
+  uintptr_t marker = UINT64_C(0x918273645abcdef0);
+  pthread_t execution_thread = {};
+  X_KTHREAD guest;
+
+  ~XThread();
+  X_STATUS Exit(int exit_code);
+  X_STATUS Terminate(int exit_code);
+  void Retain() { pointer_refs.fetch_add(1); }
+  void Release() { if (pointer_refs.fetch_sub(1) == 1) delete this; }
+  void RetainHandle() { handles_acquired.fetch_add(1); handle_refs.fetch_add(1); }
+  bool ReleaseHandle() {
+    const auto before = handle_refs.fetch_sub(1);
+    Check(before != 0, "execution/guest handle released at most once");
+    handles_released.fetch_add(1);
+    if (before == 1) Release();  // Guest table removes its pointer reference.
+    return true;
+  }
+  template <typename T> T* guest_object() { return reinterpret_cast<T*>(&guest); }
+  GuestMemory* memory() { return kernel_state_->memory(); }
+  static bool IsInThread(XThread* thread) { return current_xthread_tls_ == thread; }
+  static XThread* GetCurrentThread() { return current_xthread_tls_; }
+  void RundownAPCs() {}
+  void FreeStack();
+};
+
+void GuestKernel::UnregisterThread(XThread*) {
+  if (!baseline && test_tls && entered.load())
+    Check(tls_finished == 1, "guest XThread and PPCContext survive the first TLS drain");
+}
+}  // namespace rex::system
+
+namespace rex::kernel::xboxkrnl {
+static uint32_t xeKeKfAcquireSpinLock(PPCContext*, unsigned*) { return 0; }
+static void xeKeKfReleaseSpinLock(PPCContext*, unsigned*, uint32_t) {}
+}
+namespace rex::system::util {
+static void XeRemoveEntryList(unsigned*, GuestMemory*) {}
+}
+
+namespace rex::system {
+@EXECUTION_OWNER@
+@DESTRUCTOR@
+@EXIT_METHOD@
+@TERMINATE_METHOD@
+
+static void LateTlsDestructor(void*) {
+  Check(rex::runtime::ThreadState::Get() == nullptr, "destroyed ThreadState binding cleared before late TLS");
+  Check(current_xthread_tls_ == nullptr, "destroyed XThread binding cleared before late TLS");
+  Check(rex::thread::Thread::GetCurrentThread() != nullptr, "running native facade survives late TLS");
+  late_tls_finished.fetch_add(1);
+}
+void XThread::FreeStack() {
+  if (!baseline && test_tls && execution_thread == pthread_self()) {
+    // Production XThread destruction can invoke helpers which initialize TLS;
+    // a second drain must occur after all its members have been destroyed.
+    Check(ps5___cxa_thread_atexit_impl(LateTlsDestructor, nullptr, nullptr) == 0,
+          "register destructor from closure-owned XThread teardown");
+  }
+}
+static void GuestTlsDestructor(void* pointer) {
+  auto* thread = static_cast<XThread*>(pointer);
+  Check(destroyed == 0, "XThread still alive in TLS destructor");
+  Check(thread->marker == UINT64_C(0x918273645abcdef0), "XThread data valid in TLS destructor");
+  Check(rex::runtime::ThreadState::Get() == thread->thread_state_.get(), "actual ThreadState bound in TLS destructor");
+  Check(rex::runtime::current_ppc_context()->r1.u64 == UINT64_C(0x12340000), "actual PPCContext still alive in TLS destructor");
+  tls_finished.fetch_add(1);
+}
+
+static void ExecuteTest(XThread* thread) {
+  thread->execution_thread = pthread_self();
+  rex::runtime::ThreadState::Bind(thread->thread_state_.get());
+  current_xthread_tls_ = thread;
+  Check(pthread_setspecific(end_key, reinterpret_cast<void*>(1)) == 0, "native end marker");
+  if (test_tls)
+    Check(ps5___cxa_thread_atexit_impl(GuestTlsDestructor, thread, nullptr) == 0, "register guest TLS destructor");
+  entered.store(true);
+  while (!proceed.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  if (!std::strcmp(mode, "self-exit")) thread->Exit(23);
+  if (!std::strcmp(mode, "self-terminate")) thread->Terminate(24);
+  // External cancellation waits here without reading the XThread. The old
+  // unowned pointer's early deletion is checked before real cancellation.
+  if (!std::strcmp(mode, "external-terminate"))
+    for (;;) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  current_xthread_tls_ = nullptr;
+#ifdef XTHREAD_BASELINE
+  thread->ReleaseHandle();
+#endif
+}
+
+static bool CreateExecution(XThread* thread, bool suspended) {
+  rex::thread::Thread::CreationParameters parameters;
+  parameters.create_suspended = suspended;
+#ifdef XTHREAD_BASELINE
+  // This is the baseline Create ownership pattern, with the exact production
+  // Exit/Terminate bodies below exercising its automatic self retain.
+  thread->RetainHandle();
+  thread->thread_ = rex::thread::Thread::Create(parameters, [thread] { ExecuteTest(thread); });
+#else
+  thread->thread_ = rex::thread::Thread::Create(parameters,
+      [thread, execution = std::make_shared<XThreadExecutionOwner>(thread)] {
+        (void)execution;
+        ExecuteTest(thread);
+      });
+#endif
+  return bool(thread->thread_);
+}
+}  // namespace rex::system
+
+int main(int argc, char** argv) {
+  Check(argc >= 2, "test case argument");
+  mode = argv[1];
+#ifdef XTHREAD_BASELINE
+  baseline = true;
+#endif
+  Check(pthread_key_create(&end_key, [](void*) { native_finished.fetch_add(1); }) == 0, "end key creation");
+  auto* thread = new rex::system::XThread;
+  const bool creation_failure = !std::strcmp(mode, "create-failure");
+  const bool suspended = !std::strcmp(mode, "cancel-before-start");
+  const bool external = !std::strcmp(mode, "external-terminate");
+  test_tls = !creation_failure && !suspended && !(baseline && (external || !std::strcmp(mode, "return")));
+  fail_create = creation_failure;
+  const bool created = rex::system::CreateExecution(thread, suspended);
+  if (creation_failure) {
+    Check(!created, "native creation rejected");
+    Check(thread->handle_refs == 1 && thread->pointer_refs == 2,
+          "creation failure balances execution handle and pointer ownership");
+    thread->ReleaseHandle(); thread->Release();
+    Check(destroyed == 1 && handles_acquired == 1 && handles_released == 2, "failure reference balance");
+  } else {
+    Check(created, "execution created");
+    pthread_t native = reinterpret_cast<pthread_t>(thread->thread_->native_handle());
+    if (!suspended) Check(Await([] { return entered.load(); }), "worker entered");
+    thread->ReleaseHandle();  // Guest closes its last public handle early.
+    if (external) {
+      delay_cancel = true;
+      thread->Terminate(25);  // Exact production method, canceled dispatch delayed at syscall seam.
+      thread->Release();     // Drop caller's pointer: only execution may keep it alive.
+      Check(destroyed == (baseline ? 1u : 0u), "XThread retained until native cancellation cleanup");
+      delay_cancel = false;
+      Check(__real_pthread_cancel(delayed_target) == 0, "release delayed real cancellation");
+    } else if (suspended) {
+      thread->Terminate(26);
+      thread->Release();
+    } else {
+      thread->Release();
+      proceed = true;
+    }
+    // Public native handles may already have been detached by object deletion;
+    // the key callback is the independent marker of real native exit.
+    (void)native;
+    if (!suspended) Check(Await([] { return native_finished.load() == 1; }), "native thread exited");
+    if (baseline && (!std::strcmp(mode, "self-exit") || !std::strcmp(mode, "self-terminate"))) {
+      Check(destroyed == 0 && thread->handle_refs == 0 && thread->pointer_refs == 1,
+            "baseline leaves stack-only self reference when native exit does not unwind C++ automatic objects");
+      thread->Release();  // Test-only reclamation of the proven orphaned reference.
+      std::puts("BASELINE orphaned_pointer_refs=1 after native exit; manually reclaimed by test");
+    }
+    Check(Await([] { return destroyed.load() == 1; }), "exactly one XThread destruction");
+    Check(handles_acquired == 1 && handles_released == 2, "execution/guest handles each released once");
+    if (test_tls) Check(tls_finished == 1, "first TLS drain completed");
+    if (!baseline && test_tls) Check(Await([] { return late_tls_finished.load() == 1; }), "late TLS drain completed after XThread destruction");
+    if (suspended) Check(!entered.load(), "canceled suspended body never starts");
+  }
+  std::printf("PASS %s baseline=%d handles=%u/%u destroyed=%u tls=%u late_tls=%u hardware=not_run\n",
+      mode, baseline, handles_acquired.load(), handles_released.load(), destroyed.load(), tls_finished.load(), late_tls_finished.load());
+}

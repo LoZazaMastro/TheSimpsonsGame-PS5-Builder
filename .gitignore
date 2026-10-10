@@ -1,0 +1,105 @@
+# ============================================================
+# NEVER commit game content. Players supply their own ISO.
+# ============================================================
+gamedata/
+gamedata_previous/
+gamedata_extracting/
+extracted/
+*.iso
+*.xiso
+*.img
+*.xex
+# extracted guest shader microcode (dump_shaders debug cvar output) -- this
+# is the game's own copyrighted shader bytecode, not project source
+shader_dumps/
+
+# Prebuilt toolchains / SDK binaries (downloaded separately, multi-GB)
+tools/clang20/
+tools/rexglue-bin/
+tools/runtime-staging/
+
+# Vendored PySide6+QtWebEngine for the launcher's native window (~500MB
+# trimmed). Local-machine fix for Steam Linux Runtime sandboxing hiding the
+# host's ~/.local packages -- not meant for git history. Rebuild with:
+#   pip install --target=launcher/vendor PySide6
+# then trim per the removal lists in this session's commit message.
+launcher/vendor/
+
+# Build outputs
+simpsons/out/
+tools/rexglue-sdk/build/
+tools/rexglue-sdk/out/
+tools/XenonRecomp/build/
+tools/extract-xiso/build/
+build/
+*.o
+*.so.orig
+*.so.bak*
+*.bak-*
+
+# Launcher user-local state (generated from the player's own files)
+launcher/art/
+launcher/backups/
+launcher/mods/
+launcher/icon.png
+launcher/launcher.json
+launcher/__pycache__/
+__pycache__/
+
+# Logs, captures, scratch, analysis debris
+*.log
+logs/
+analysis/
+# benchmark harness run artifacts (the scripts themselves are tracked)
+tools/bench/baselines/
+tools/bench/run-*.csv
+tools/bench/shaderstats-raw.txt
+tools/bench/pgo-profiles/
+.perf-scratch/
+scratch_codegen/
+scratch_project/
+scratch_codegen_manifest.toml
+generated_BACKUP_*/
+*.png
+*.data
+perf_hang.data
+missing_*.txt
+capture*.sh
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Vendored toolchain archives (too large for git; downloaded separately)
+tools/*.tar.xz
+tools/*.zip
+tools/*.tar.gz
+
+# extracted game content (copyrighted) - never ship
+gamedata_clean_extract/
+
+# external repos pulled as read-only reference material (licenses respected;
+# nothing copied without a per-file license check)
+tools/reference/
+
+# vendored dependencies: ship their sources, not their git object stores
+.git.vendored/
+
+# launcher runtime state
+launcher/last_exit.txt
+launcher/last_run_debug.txt
+launcher/launcher_native_error.log
+launcher/launcher.log
+launcher/diagnostics/
+
+# codegraph: rebuildable index (tools/codegraph/recomp_index.py build), not source
+tools/codegraph/*.sqlite
+
+# Native renderer offline tool outputs (binaries, SPIR-V sets, frame dumps)
+tools/native-renderer/out/
+
+# Local PS5 builds, external pinned dependencies and staged native application
+/out/
+/.deps/
+/dist/

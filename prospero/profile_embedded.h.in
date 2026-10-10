@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr const char kProsperoDefaultProfile[] = R"ps5profile(@PROSPERO_PROFILE_CONTENT@)ps5profile";

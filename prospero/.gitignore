@@ -1,0 +1,5 @@
+# Presentation artwork is intentional project data (upstream ignores *.png).
+!assets/source/*.png
+!sce_sys/*.png
+__pycache__/
+*.pyc

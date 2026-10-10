@@ -1,0 +1,1778 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Simpsons Game — Recompiled</title>
+<script>
+  // The theme is set before the first paint so the page doesn't flash the
+  // other one. The server fills in the saved choice: system, light or dark.
+  (function () {
+    var pref = "__THEME__";
+    var forced = /[?&]theme=(light|dark)/.exec(location.search);
+    if (forced) pref = forced[1];
+    var dark = pref === "dark" || (pref !== "light" && window.matchMedia &&
+               window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  })();
+</script>
+<style>
+  @font-face{font-family:"Luckiest Guy"; src:url("/fonts/LuckiestGuy-Regular.ttf") format("truetype"); font-display:swap}
+
+  /* Two themes in the style of the show: a daytime sky with the opening's
+     fluffy clouds, and Springfield at night. Everything is drawn like a
+     cartoon cel: thick dark outlines, flat colours, a hard drop shadow. */
+  :root{
+    --display:"Luckiest Guy", "Arial Black", Impact, sans-serif;
+    --body:"Segoe UI", "Noto Sans", Ubuntu, Roboto, -apple-system, Arial, sans-serif;
+    --mono:"SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+    --yellow:#FFD90F; --yellow-hover:#FFE44D; --yellow-ink:#2B2100;
+    --pink:#FF5FA2; --orange:#F2711C; --green:#4FA83D; --red:#D8432B;
+    --radius:18px; --radius-sm:12px;
+  }
+  :root[data-theme="light"]{
+    color-scheme:light;
+    --sky-top:#2E9BEA; --sky-bottom:#B9E3FF;
+    --ink:#1D1A17; --shadow:#1D1A17;
+    --surface:#FFFFFF; --surface-2:#F2F6FB; --surface-3:#E3ECF7;
+    --line:rgba(29,26,23,.14);
+    --text:#1D2230; --text-dim:#4A5366; --text-faint:#717A8E;
+    --blue:#1D6FCC; --blue-soft:#DDEBFF; --blue-ink:#0E3E7A;
+    --green-soft:#E1F4D9; --green-ink:#24561A;
+    --yellow-soft:#FFF5C2; --yellow-soft-ink:#5E4A00;
+    --red-soft:#FFE1DB; --red-ink:#7A2214;
+    --console-bg:#1C2333; --console-text:#E6ECF7;
+    --cloud:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 180'><g fill='%23cfe5f8' transform='translate(0 12)'><circle cx='112' cy='96' r='56'/><circle cx='182' cy='70' r='72'/><circle cx='262' cy='88' r='60'/><circle cx='326' cy='112' r='42'/><circle cx='66' cy='122' r='38'/><rect x='60' y='104' width='290' height='56' rx='28'/></g><g fill='%23ffffff'><circle cx='112' cy='96' r='56'/><circle cx='182' cy='70' r='72'/><circle cx='262' cy='88' r='60'/><circle cx='326' cy='112' r='42'/><circle cx='66' cy='122' r='38'/><rect x='60' y='104' width='290' height='56' rx='28'/></g></svg>");
+    --stars:none;
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --sky-top:#050A1C; --sky-bottom:#1B2C59;
+    --ink:#03050C; --shadow:#03050C;
+    --surface:#17213D; --surface-2:#1F2B4C; --surface-3:#2A3A63;
+    --line:rgba(220,230,255,.12);
+    --text:#F6F2E6; --text-dim:#B6BFD6; --text-faint:#8590AC;
+    --blue:#6DB7FF; --blue-soft:rgba(109,183,255,.15); --blue-ink:#CFE6FF;
+    --green-soft:rgba(79,168,61,.18); --green-ink:#CDEBC0;
+    --yellow-soft:rgba(255,217,15,.13); --yellow-soft-ink:#FFE88A;
+    --red-soft:rgba(216,67,43,.18); --red-ink:#FFC4B8;
+    --console-bg:#090E20; --console-text:#DCE4F5;
+    --cloud:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 180'><g fill='%23182650' transform='translate(0 12)'><circle cx='112' cy='96' r='56'/><circle cx='182' cy='70' r='72'/><circle cx='262' cy='88' r='60'/><circle cx='326' cy='112' r='42'/><circle cx='66' cy='122' r='38'/><rect x='60' y='104' width='290' height='56' rx='28'/></g><g fill='%23223463'><circle cx='112' cy='96' r='56'/><circle cx='182' cy='70' r='72'/><circle cx='262' cy='88' r='60'/><circle cx='326' cy='112' r='42'/><circle cx='66' cy='122' r='38'/><rect x='60' y='104' width='290' height='56' rx='28'/></g></svg>");
+    --stars:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='260' height='260'><g fill='%23ffffff' fill-opacity='.85'><circle cx='14' cy='22' r='1.3'/><circle cx='82' cy='61' r='1'/><circle cx='151' cy='17' r='1.6'/><circle cx='211' cy='92' r='1.1'/><circle cx='41' cy='133' r='1.4'/><circle cx='121' cy='171' r='1'/><circle cx='231' cy='203' r='1.5'/><circle cx='181' cy='241' r='1'/><circle cx='71' cy='221' r='1.2'/><circle cx='251' cy='31' r='.9'/><circle cx='101' cy='111' r='.8'/></g></svg>");
+  }
+
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{font-family:var(--body); color:var(--text); min-height:100vh; line-height:1.45;
+    background-color:var(--sky-bottom)}
+  /* The sky sits on its own fixed layer so it is painted once, not again with
+     every change on the page: the launcher window is software-rendered, and
+     repainting the clouds kept a CPU core busy while the game was running. */
+  body::before{content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    will-change:transform;
+    background-image:var(--cloud), var(--cloud), var(--cloud), var(--cloud), var(--stars),
+      linear-gradient(180deg, var(--sky-top) 0%, var(--sky-bottom) 100%);
+    background-repeat:no-repeat, no-repeat, no-repeat, no-repeat, repeat, no-repeat;
+    background-size:340px auto, 430px auto, 300px auto, 470px auto, 260px 260px, 100% 100%;
+    background-position:-70px 120px, calc(100% + 90px) 24px, 80% 64%, 4% 92%, 0 0, 0 0}
+
+  .wrap{max-width:1120px; margin:0 auto; padding:22px 24px 60px}
+  .hidden{display:none !important}
+  a{color:var(--blue); font-weight:600; text-decoration:none} a:hover{text-decoration:underline}
+  code{font-family:var(--mono); font-size:.92em; background:var(--surface-2); padding:1px 5px; border-radius:6px}
+
+  /* ---------------------------------------------------------------- header */
+  header{display:flex; align-items:center; gap:16px}
+  .donut{width:58px; height:58px; border-radius:50%; flex:none; position:relative; cursor:pointer;
+    background:radial-gradient(circle at 50% 50%, var(--sky-top) 0 9px, var(--ink) 9px 11.5px, var(--pink) 11.5px 22px, #E9A24A 22px 25.5px, var(--ink) 25.5px 29px);
+    box-shadow:0 4px 0 var(--ink)}
+  :root[data-theme="dark"] .donut{background:radial-gradient(circle at 50% 50%, #0d1735 0 9px, var(--ink) 9px 11.5px, var(--pink) 11.5px 22px, #E9A24A 22px 25.5px, var(--ink) 25.5px 29px)}
+  .donut.fast{animation:spin .6s linear 2}
+  .donut i{position:absolute; width:6px; height:2.5px; border-radius:2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .titles{display:flex; flex-direction:column; align-items:flex-start}
+  h1{font-family:var(--display); font-weight:normal; font-size:36px; line-height:1; letter-spacing:.5px;
+    color:var(--yellow); padding-top:4px;
+    text-shadow:-2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+      0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink), 0 5px 0 var(--ink)}
+  .subtitle{font-family:var(--display); font-size:13px; letter-spacing:2px; color:#fff; background:var(--blue);
+    border:2.5px solid var(--ink); border-radius:999px; padding:4px 12px 2px; margin-top:8px;
+    transform:rotate(-2deg); box-shadow:0 3px 0 var(--ink)}
+  :root[data-theme="dark"] .subtitle{background:#2F6FD6}
+  .headerspacer{flex:1}
+  .verchip{font-family:var(--mono); font-size:12px; font-weight:700; color:var(--text);
+    background:var(--surface); border:2.5px solid var(--ink); border-radius:999px; padding:6px 12px;
+    box-shadow:0 3px 0 var(--ink)}
+  .themebtn{width:44px; height:44px; border-radius:50%; border:3px solid var(--ink); background:var(--surface);
+    color:var(--text); display:flex; align-items:center; justify-content:center; cursor:pointer;
+    box-shadow:0 3px 0 var(--ink); transition:transform .08s}
+  .themebtn:hover{transform:translateY(-1px)}
+  .themebtn:active{transform:translateY(3px); box-shadow:0 0 0 var(--ink)}
+  .themebtn svg{width:22px; height:22px}
+  :root[data-theme="light"] .themebtn .sun{display:none}
+  :root[data-theme="dark"] .themebtn .moon{display:none}
+
+  /* ------------------------------------------------------------------- nav */
+  nav{display:flex; gap:8px; flex-wrap:wrap; margin:20px 0 22px}
+  nav button{font-family:var(--display); font-size:16px; letter-spacing:.6px; color:var(--text);
+    background:var(--surface); border:3px solid var(--ink); border-radius:999px; padding:9px 18px 6px;
+    box-shadow:0 4px 0 var(--ink); cursor:pointer; transition:transform .08s, background .12s}
+  nav button:hover{transform:translateY(-1px)}
+  nav button:active{transform:translateY(3px); box-shadow:0 1px 0 var(--ink)}
+  nav button.active{background:var(--yellow); color:var(--yellow-ink)}
+
+  /* ----------------------------------------------------------------- cards */
+  .card{background:var(--surface); border:3px solid var(--ink); border-radius:var(--radius);
+    padding:20px 22px; margin-bottom:20px; box-shadow:0 6px 0 var(--shadow)}
+  h2{font-family:var(--display); font-weight:normal; font-size:21px; letter-spacing:.6px; color:var(--text);
+    display:flex; align-items:center; gap:10px; margin-bottom:14px; line-height:1.1}
+  h2::before{content:""; width:18px; height:18px; border-radius:50%; flex:none; margin-top:-3px;
+    border:2.5px solid var(--ink);
+    background:radial-gradient(circle, var(--surface) 0 3px, var(--ink) 3px 4.5px, var(--pink) 4.5px 100%)}
+  h3{font-family:var(--display); font-weight:normal; font-size:16px; letter-spacing:.6px; color:var(--blue);
+    margin:22px 0 12px}
+  .muted{color:var(--text-dim); font-size:14px; line-height:1.6}
+  .ok{color:var(--green); font-weight:700} .err{color:var(--red); font-weight:700}
+  .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .row input[type=text]{flex:1; min-width:200px}
+
+  /* ------------------------------------------------------------------ hero */
+  .hero{position:relative; border:3px solid var(--ink); border-radius:24px; overflow:hidden;
+    height:clamp(290px, 47vh, 430px); box-shadow:0 7px 0 var(--shadow);
+    background:var(--cloud) no-repeat 12% 30% / 360px auto, var(--cloud) no-repeat 92% 70% / 420px auto,
+      linear-gradient(180deg, var(--sky-top), var(--sky-bottom))}
+  .hero img{width:100%; height:100%; object-fit:cover; object-position:50% 28%; display:block; transition:opacity .5s}
+  .hero.noart img{display:none}
+  .hero .placeholder{display:none; position:absolute; inset:0; align-items:center; justify-content:center;
+    font-family:var(--display); font-size:26px; color:#fff; letter-spacing:.6px; padding:0 40px 80px;
+    text-align:center; text-shadow:0 3px 0 var(--ink)}
+  .hero.noart .placeholder{display:flex}
+  .hero .scrim{position:absolute; inset:0; pointer-events:none;
+    background:linear-gradient(180deg, rgba(0,0,0,0) 48%, rgba(8,12,28,.85) 100%)}
+  .hero .inner{position:absolute; left:24px; right:24px; bottom:20px; display:flex;
+    align-items:flex-end; justify-content:space-between; gap:16px}
+  .statusline{color:#fff; font-weight:700; font-size:14px; text-shadow:0 2px 4px rgba(0,0,0,.7); max-width:60%}
+  .playbtn{font-family:var(--display); font-size:32px; letter-spacing:1px; padding:14px 48px 9px;
+    border:4px solid var(--ink); border-radius:20px; background:var(--yellow); color:var(--yellow-ink);
+    box-shadow:0 6px 0 var(--ink); cursor:pointer; transition:transform .08s, box-shadow .08s, background .12s}
+  .playbtn:hover:not(:disabled){background:var(--yellow-hover); transform:translateY(-2px); box-shadow:0 8px 0 var(--ink)}
+  .playbtn:active:not(:disabled){transform:translateY(4px); box-shadow:0 2px 0 var(--ink)}
+  .playbtn:disabled{background:#A7AFBF; color:#3A4152; cursor:not-allowed}
+  .stopbtn{font-family:var(--display); font-size:17px; letter-spacing:.6px; padding:11px 20px 7px;
+    border:3px solid var(--ink); border-radius:14px; background:var(--red); color:#fff;
+    box-shadow:0 4px 0 var(--ink); cursor:pointer}
+
+  .banner{display:flex; gap:12px; align-items:center; margin-top:18px; padding:12px 16px;
+    background:var(--blue-soft); color:var(--blue-ink); border:3px solid var(--ink); border-radius:var(--radius-sm);
+    font-size:14px; font-weight:600; box-shadow:0 4px 0 var(--shadow)}
+  .banner.kbm{background:var(--green-soft); color:var(--green-ink)}
+  .badges{display:flex; gap:10px; margin-top:16px; flex-wrap:wrap}
+  .badge{font-family:var(--display); font-size:13px; letter-spacing:.6px; padding:6px 13px 3px;
+    border:2.5px solid var(--ink); border-radius:999px; background:var(--surface); color:var(--text-dim);
+    box-shadow:0 3px 0 var(--ink)}
+  .badge.ready{background:var(--green-soft); color:var(--green-ink)}
+  .badge.experimental{background:var(--yellow-soft); color:var(--yellow-soft-ink)}
+  .badge .dot{display:none}
+
+  /* --------------------------------------------------------------- buttons */
+  .bigbtn{font-family:var(--display); font-size:15px; letter-spacing:.6px; padding:10px 18px 7px;
+    border:3px solid var(--ink); border-radius:var(--radius-sm); background:var(--surface-2); color:var(--text);
+    box-shadow:0 4px 0 var(--ink); cursor:pointer; white-space:nowrap; transition:transform .08s, background .12s}
+  .bigbtn:hover:not(:disabled){transform:translateY(-1px); background:var(--surface-3)}
+  .bigbtn:active:not(:disabled){transform:translateY(3px); box-shadow:0 1px 0 var(--ink)}
+  .bigbtn.gold{background:var(--yellow); color:var(--yellow-ink)}
+  .bigbtn.gold:hover:not(:disabled){background:var(--yellow-hover)}
+  .bigbtn.alt{background:var(--blue); color:#fff}
+  :root[data-theme="dark"] .bigbtn.alt{background:#2F6FD6}
+  .bigbtn:disabled{opacity:.55; cursor:not-allowed}
+  .smallbtn,.minibtn{font-family:var(--display); font-size:12.5px; letter-spacing:.5px; padding:6px 11px 3px; white-space:nowrap;
+    border:2.5px solid var(--ink); border-radius:10px; background:var(--surface-2); color:var(--text);
+    box-shadow:0 2px 0 var(--ink); cursor:pointer; vertical-align:middle}
+  .smallbtn:hover:not(:disabled),.minibtn:hover{background:var(--yellow); color:var(--yellow-ink)}
+  .smallbtn:active,.minibtn:active{transform:translateY(2px); box-shadow:none}
+  .smallbtn:disabled{opacity:.55; cursor:not-allowed}
+  .minibtn{margin-left:auto}
+
+  /* -------------------------------------------------------------- callouts */
+  .callout{display:flex; gap:14px; align-items:flex-start; padding:14px 16px; margin-bottom:18px;
+    border:3px solid var(--ink); border-radius:var(--radius-sm); font-size:14px; line-height:1.55;
+    box-shadow:0 4px 0 var(--shadow)}
+  .callout .tag{flex:none; font-family:var(--display); font-size:12px; letter-spacing:.6px;
+    padding:4px 9px 1px; border:2px solid var(--ink); border-radius:8px; background:var(--surface)}
+  .callout.info{background:var(--blue-soft); color:var(--blue-ink)}
+  .callout.warn{background:var(--yellow-soft); color:var(--yellow-soft-ink)}
+  .callout.danger{background:var(--red-soft); color:var(--red-ink)}
+  .callout b{font-weight:800}
+  .footer-legal{margin-top:24px; font-size:12px; color:var(--text-dim); line-height:1.6; text-align:center;
+    background:var(--surface); border:2.5px solid var(--ink); border-radius:var(--radius-sm); padding:12px 16px}
+
+  /* ---------------------------------------------------------------- fields */
+  .grid{display:grid; grid-template-columns:1fr 1fr; gap:16px 18px}
+  .field{font-size:13.5px; font-weight:600; color:var(--text-dim)}
+  .field > label{display:block; margin-bottom:7px; color:var(--text); font-weight:700}
+  .field input[type=text],.field input[type=number],.row input[type=text]{
+    width:100%; font-family:var(--body); font-weight:600; font-size:14px; padding:10px 12px; color:var(--text);
+    background:var(--surface-2); border:2.5px solid var(--ink); border-radius:10px}
+  input[type=text]:focus{outline:none; box-shadow:0 0 0 3px var(--yellow)}
+  .field .hint{font-weight:500; color:var(--text-faint); font-size:12.5px; margin-top:6px; line-height:1.5}
+  .field input[type=range]{width:100%; accent-color:var(--yellow)}
+
+  /* Custom dropdown: native <select> popups are separate OS-level popup
+     windows, and that class of popup is known to fail to render (or render
+     off-screen) inside an embedded QWebEngineView window on Linux/Wayland.
+     The real <select> stays in the DOM (display:none) as the source of
+     truth for the load/save code -- this only replaces its popup. */
+  .customselect{position:relative}
+  .customselect > select{display:none}
+  .customselect-trigger{width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px;
+    font-family:var(--body); font-weight:700; font-size:14px; padding:10px 12px; color:var(--text); text-align:left;
+    background:var(--surface-2); border:2.5px solid var(--ink); border-radius:10px; cursor:pointer}
+  .customselect-trigger:focus{outline:none; box-shadow:0 0 0 3px var(--yellow)}
+  .customselect-trigger .arrow{font-size:11px; transition:transform .15s}
+  .customselect.open .customselect-trigger .arrow{transform:rotate(180deg)}
+  .customselect-panel{display:none; position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:40;
+    background:var(--surface); border:2.5px solid var(--ink); border-radius:12px; box-shadow:0 5px 0 var(--ink);
+    max-height:270px; overflow-y:auto; padding:5px}
+  .customselect.open .customselect-panel{display:block}
+  .customselect-option{padding:9px 10px; border-radius:8px; font-size:14px; font-weight:600; color:var(--text);
+    cursor:pointer; line-height:1.4}
+  .customselect-option:hover{background:var(--surface-3)}
+  .customselect-option.sel{background:var(--yellow); color:var(--yellow-ink)}
+
+  /* checkboxes drawn as toggle switches */
+  .switch{display:flex; align-items:center; gap:11px; cursor:pointer; user-select:none; color:var(--text); font-weight:700}
+  .switch input{appearance:none; -webkit-appearance:none; flex:none; width:46px; height:26px; border-radius:999px;
+    border:2.5px solid var(--ink); background:var(--surface-3); position:relative; cursor:pointer;
+    transition:background .15s}
+  .switch input::before{content:""; position:absolute; top:2px; left:2px; width:17px; height:17px; border-radius:50%;
+    background:#fff; border:2px solid var(--ink); transition:left .15s}
+  .switch input:checked{background:var(--yellow)}
+  .switch input:checked::before{left:21px}
+  .switch input:focus-visible{box-shadow:0 0 0 3px var(--blue)}
+
+  .toast{position:fixed; right:24px; bottom:22px; z-index:60; font-family:var(--display); font-size:16px;
+    letter-spacing:.5px; color:var(--yellow-ink); background:var(--yellow); border:3px solid var(--ink);
+    border-radius:999px; padding:10px 18px 7px; box-shadow:0 4px 0 var(--ink);
+    transform:translateY(120px); transition:transform .25s}
+  .toast.show{transform:none}
+  .autosave{font-size:13px; color:var(--text-dim); font-weight:600; text-align:center; margin-top:-4px}
+
+  /* -------------------------------------------------------------- consoles */
+  .console{background:var(--console-bg); color:var(--console-text); font:12px/1.55 var(--mono);
+    border:2.5px solid var(--ink); border-radius:12px; padding:12px 14px; height:170px; overflow-y:auto;
+    white-space:pre-wrap; word-break:break-all}
+  .console:focus{outline:none; box-shadow:0 0 0 3px var(--yellow)}
+  .lockart{font-family:var(--display); font-size:14px; letter-spacing:1px; text-align:center;
+    padding:6px 0 2px; color:var(--text-faint)}
+
+  table{width:100%; border-collapse:collapse; font-size:13.5px}
+  td,th{border-bottom:1.5px solid var(--line); padding:9px 6px; text-align:left; color:var(--text-dim)}
+  th{font-family:var(--display); font-weight:normal; letter-spacing:.5px; font-size:13px; color:var(--text-faint)}
+  tr:last-child td{border-bottom:none}
+
+  /* ---------------------------------------------------------------- modals */
+  .modal{position:fixed; inset:0; background:rgba(5,10,25,.55); z-index:50;
+    display:flex; align-items:center; justify-content:center; backdrop-filter:blur(3px)}
+  .modal .box{background:var(--surface); border:3px solid var(--ink); border-radius:var(--radius);
+    width:640px; max-width:92vw; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 0 var(--ink)}
+  .modal .head{padding:14px 18px; border-bottom:2.5px solid var(--line); display:flex;
+    justify-content:space-between; align-items:center; font-family:var(--display); font-size:18px; letter-spacing:.5px}
+  .modal .head b{font-weight:normal}
+  .modal .path{font-family:var(--mono); font-size:12px; color:var(--text-faint); padding:8px 18px;
+    border-bottom:1.5px solid var(--line); word-break:break-all}
+  .modal .list{overflow-y:auto; flex:1; padding:6px}
+  .modal .entry{padding:10px 12px; border-radius:10px; font-weight:600; font-size:14px; cursor:pointer;
+    display:flex; justify-content:space-between; color:var(--text)}
+  .modal .entry:hover{background:var(--surface-3)}
+  .patchrow{display:flex; justify-content:space-between; align-items:center; gap:14px;
+    padding:14px 0; border-bottom:1.5px solid var(--line)}
+  .patchrow:last-child{border-bottom:none}
+  .patchrow b{font-size:15px; color:var(--text)}
+  .patchrow .desc{font-size:13px; color:var(--text-dim); font-weight:500; margin-top:4px; line-height:1.5}
+
+  /* -------------------------------------------------- keyboard & mouse table */
+  .ctrltable{margin-top:16px}
+  .ctrltable td{vertical-align:middle; padding:7px 6px}
+  .ctrltable td.act{color:var(--text); font-weight:700; width:42%}
+  .ctrltable td.act .pad{font-family:var(--display); font-weight:normal; font-size:12px; letter-spacing:.4px;
+    margin-left:8px; padding:3px 8px 1px; border:2px solid var(--ink); border-radius:999px;
+    background:var(--surface-2); color:var(--text-dim)}
+  .keychip{display:inline-block; font-family:var(--mono); font-size:12px; font-weight:800; padding:3px 9px;
+    margin:2px 6px 2px 0; border-radius:8px; background:var(--surface); color:var(--text);
+    border:2px solid var(--ink); box-shadow:0 2px 0 var(--ink)}
+  .keychip.none{color:var(--text-faint); border-style:dashed; box-shadow:none}
+  .keychip.dupe{background:var(--red-soft); color:var(--red-ink)}
+  .ctrlhint{font-size:12.5px; font-weight:500; color:var(--text-faint); line-height:1.5}
+  .ctrltable td.rowbtns{white-space:nowrap; text-align:right; width:1%}
+  .ctrltable td.rowbtns .smallbtn{margin-left:4px}
+  .capturebox{padding:40px 20px; text-align:center; font-size:16px; font-weight:700; color:var(--text);
+    outline:none; cursor:crosshair; user-select:none}
+  .capturebox .sub{font-size:13px; color:var(--text-dim); font-weight:500; margin-top:10px}
+
+  @media (max-width:760px){ .grid{grid-template-columns:1fr} h1{font-size:28px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="donut" id="donut" title="Mmm… donut"></div>
+    <div class="titles">
+      <h1>The Simpsons Game</h1>
+      <span class="subtitle">Recompiled</span>
+    </div>
+    <div class="headerspacer"></div>
+    <div class="verchip" id="verchip">v…</div>
+    <button class="themebtn" id="themebtn" title="Switch between the light and dark theme">
+      <svg class="moon" viewBox="0 0 24 24" fill="currentColor"><path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a.6.6 0 0 0-.8-.7A9.7 9.7 0 1 0 21.2 15.4a.6.6 0 0 0-.7-.8z"/></svg>
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="4.4" fill="currentColor"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"/></svg>
+    </button>
+  </header>
+
+  <nav>
+    <button data-tab="play" class="active">Play</button>
+    <button data-tab="install">Install</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="patches">Patches</button>
+    <button data-tab="mods">Mods</button>
+    <button data-tab="support">Support</button>
+    <button data-tab="about">About</button>
+  </nav>
+
+  <!-- ============================= PLAY ============================= -->
+  <section id="tab-play">
+    <div class="hero noart" id="hero">
+      <img id="heroimg" alt="" src="">
+      <div class="placeholder" id="heroplaceholder">Install your game and Springfield shows up here</div>
+      <div class="scrim"></div>
+      <div class="inner">
+        <div class="statusline" id="playstatus">checking…</div>
+        <div style="display:flex; gap:12px; align-items:center">
+          <button class="stopbtn hidden" id="stopbtn">Stop</button>
+          <button class="playbtn" id="playbtn" disabled>Play</button>
+        </div>
+      </div>
+    </div>
+    <div class="banner" id="inputbanner">
+      <span id="inputbannertext">Set up for a <u>controller</u> — to play with keyboard &amp; mouse, turn it on in Settings → Keyboard &amp; mouse.</span>
+    </div>
+    <div class="badges" id="platformbadges"></div>
+    <div class="row" style="margin-top:18px">
+      <button class="bigbtn" id="steambtn">Add to Steam (Gaming Mode)</button>
+      <span class="muted" id="steammsg"></span>
+    </div>
+    <div class="card" style="margin-top:20px">
+      <h2>Game console output
+        <button class="minibtn" id="copylogbtn" title="Copy the console output to the clipboard">Copy</button>
+      </h2>
+      <div class="console" id="gamelog" tabindex="0">–</div>
+    </div>
+  </section>
+
+  <!-- ============================ INSTALL =========================== -->
+  <section id="tab-install" class="hidden">
+    <div class="callout info">
+      <span class="tag">Note</span>
+      <div>This project ships <b>no copyrighted game files</b>. Provide an ISO of
+      <b>The Simpsons Game (Xbox 360)</b> that <b>you personally own</b> — the launcher reads
+      your disc image locally and installs it next to the recompiled engine. Nothing is
+      uploaded anywhere.</div>
+    </div>
+    <div class="card">
+      <h2>Install from your game disc</h2>
+      <div class="row">
+        <input type="text" id="isopath" placeholder="/path/to/Simpsons_Game.iso">
+        <button class="bigbtn alt" id="browsebtn">Browse…</button>
+        <button class="bigbtn gold" id="installbtn">Extract &amp; install</button>
+      </div>
+      <p class="muted" id="installstate" style="margin-top:10px"></p>
+      <div class="console" id="installlog" style="margin-top:10px">–</div>
+    </div>
+    <div class="card">
+      <h2>Save data</h2>
+      <div class="row">
+        <button class="bigbtn" id="backupbtn">Back up saves</button>
+        <span class="muted" id="backupmsg"></span>
+      </div>
+      <table id="backuptable" style="margin-top:12px"></table>
+    </div>
+    <div class="card">
+      <h2>Launcher artwork</h2>
+      <div class="row">
+        <p class="muted" style="flex:1">The pictures on the Play tab are frames from the cutscenes
+          of your installed copy, made on this computer.</p>
+        <button class="smallbtn" id="regenart">Regenerate</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================== SETTINGS =========================== -->
+  <section id="tab-settings" class="hidden">
+    <div class="card">
+      <h2>Display</h2>
+      <div class="grid">
+        <div class="field">
+          <label>Display mode</label>
+          <select id="s-fullscreen">
+            <option value="false">Windowed</option>
+            <option value="true">Fullscreen</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Game video mode (experimental)</label>
+          <select id="s-resolution">
+            <option value="">Automatic (recommended)</option>
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+            <option value="1440p">1440p</option>
+            <option value="4k">4K</option>
+          </select>
+          <div class="hint">Tells the game what size of TV it is on, and sets the starting window
+            size. It doesn't make the picture sharper — Render resolution below does. Can crash some
+            scenes. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Graphics backend</label>
+          <select id="s-gpu">
+            <option value="">Automatic (Vulkan, D3D12 fallback)</option>
+            <option value="vulkan">Vulkan</option>
+            <option value="d3d12">Direct3D 12 (Windows only)</option>
+            <option value="d3d11">Direct3D 11 (experimental, Windows only)</option>
+          </select>
+          <div class="hint">Vulkan plays the intro videos and matches console colors. Pick Direct3D 12 only if Vulkan fails on your GPU. Direct3D 11 is an experimental option for older GPUs and is slower at higher render scales. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Renderer</label>
+          <select id="s-render_target_path_vulkan">
+            <option value="native">Native (GPU render targets)</option>
+            <option value="fsi">Legacy (Xbox EDRAM emulation)</option>
+          </select>
+          <div class="hint">Native draws with your GPU's own render targets. Legacy emulates the Xbox 360's video memory in shaders, a fallback if something looks wrong on Native. Vulkan only. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Vulkan device (multi-GPU / laptop)</label>
+          <select id="s-vulkan_device">
+            <option value="">Automatic (recommended)</option>
+            <option value="0">Device 0</option>
+            <option value="1">Device 1</option>
+          </select>
+          <div class="hint">The GPU to use with Vulkan. Leave on Automatic if unsure.</div>
+        </div>
+        <div class="field" style="display:flex; flex-direction:column; gap:14px; justify-content:center">
+          <label class="switch"><input type="checkbox" id="s-vsync"> VSync</label>
+          <label class="switch"><input type="checkbox" id="s-present_letterbox"> Letterbox non-native aspect ratios</label>
+        </div>
+      </div>
+      <h3>Quality</h3>
+      <div class="grid">
+        <div class="field">
+          <label>Render resolution</label>
+          <select id="s-resolution_scale">
+            <option value="1">1× — 720p (recommended on Steam Deck)</option>
+            <option value="2">2× — 1440p, sharper</option>
+            <option value="3">3× — 4K, sharpest (heavy)</option>
+          </select>
+          <div class="hint">How many pixels the game draws. 3× is a true 4K picture; higher looks
+            sharper and thin details like wires stay visible, but costs GPU time. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Shadow resolution</label>
+          <select id="s-native_rt_original_resolution_targets">
+            <option value="">Match render resolution (sharpest)</option>
+            <option value="832:13">Original (faster at 2× and 3×)</option>
+          </select>
+          <div class="hint">At 2× or 3×, shadows at the original resolution look almost the same and
+            save about 0.7 ms per frame on the Steam Deck. No effect at 1×. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Upscaling filter</label>
+          <select id="s-present_effect">
+            <option value="bilinear">Bilinear (default, no sharpening)</option>
+            <option value="fsr">AMD FSR 1 — sharper upscaling</option>
+            <option value="cas">AMD CAS — sharpening only</option>
+          </select>
+          <div class="hint">How the picture is scaled to your screen. Bilinear adds no sharpening.
+            FSR 1 gives the crispest picture on 1080p and larger monitors. Restart needed.</div>
+        </div>
+        <div class="field" id="fsrsharpfield">
+          <label>FSR sharpening</label>
+          <select id="s-present_fsr_sharpness_reduction">
+            <option value="0">Strong</option>
+            <option value="0.2">Normal</option>
+            <option value="0.5">Soft</option>
+            <option value="1">Very soft</option>
+          </select>
+          <div class="hint">Only used by FSR 1. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Anti-aliasing</label>
+          <select id="s-swap_post_effect">
+            <option value="none">Off</option>
+            <option value="fxaa">FXAA (recommended on Steam Deck)</option>
+            <option value="fxaa_extreme">FXAA Extreme (smoother, can smear HUD text)</option>
+          </select>
+          <div class="hint">FXAA runs at the render resolution. At a render scale of 2x or
+            more the image is already supersampled, so it adds little there, and on the Steam
+            Deck it costs about 1 ms a frame at 2x. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Characters' eyes</label>
+          <select id="s-eye_shading">
+            <option value="clean">Clean (as the artists drew them)</option>
+            <option value="original">Original (speckled shadow)</option>
+          </select>
+          <div class="hint">The original game scatters dark dots over the eye whites. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Texture filtering (anisotropic)</label>
+          <select id="s-anisotropic_override">
+            <option value="0">Off</option>
+            <option value="2">2×</option>
+            <option value="3">4× (default)</option>
+            <option value="4">8×</option>
+            <option value="5">16×</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Character tessellation</label>
+          <select id="s-character_tessellation">
+            <option value="off">Off (original geometry)</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+          <div class="hint">Experimental. Rounds supported character meshes on Vulkan. Higher levels
+            cost more GPU time. Restart needed.</div>
+        </div>
+      </div>
+      <h3>Ink outlines</h3>
+      <div class="grid">
+        <div class="field">
+          <label>Outlines</label>
+          <select id="s-ink_outlines">
+            <option value="original">Hard (original)</option>
+            <option value="soft">Soft (anti-aliased)</option>
+            <option value="off">Off</option>
+          </select>
+          <div class="hint">The game's black cel-shading lines. Restart needed.</div>
+        </div>
+        <div class="field" id="inkstrengthfield">
+          <label>Soft line strength: <span id="inkstrengthlabel">0.60</span></label>
+          <input type="range" id="s-ink_outline_strength" min="0.1" max="1" step="0.05" value="0.6">
+          <div class="hint">0.1 barely visible, 1.0 close to the original darkness.</div>
+        </div>
+        <div class="field" id="inkcolorfield">
+          <label>Line colour <span id="inkswatch" style="display:inline-block; width:14px; height:14px;
+            border:2px solid var(--ink); border-radius:4px; vertical-align:middle; margin-left:6px"></span></label>
+          <select id="s-ink_color_preset">
+            <option value="000000">Black (original)</option>
+            <option value="3C3C3C">Dark grey</option>
+            <option value="46281A">Dark brown</option>
+            <option value="0F1E50">Dark blue</option>
+            <option value="5A0F0F">Dark red</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <input type="text" id="s-ink_outline_color" maxlength="7" placeholder="RRGGBB, e.g. FF8000"
+            style="margin-top:8px">
+          <div class="hint" id="inkcolorhint">Any colour as RRGGBB hex. Restart needed.</div>
+        </div>
+      </div>
+      <h3>Colour</h3>
+      <div class="grid">
+        <div class="field">
+          <label>Look</label>
+          <select id="s-color_preset">
+            <option value="original">Original</option>
+            <option value="vivid">Vivid</option>
+            <option value="punchy">Punchy</option>
+            <option value="soft">Soft</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <div class="hint">Grades the final image: Vivid brings out muted colours, Punchy adds
+            contrast too, Soft is gentler than the original. Vulkan only. Restart needed.</div>
+        </div>
+        <div class="field colorfield">
+          <label>Vibrance: <span id="color_vibrance_label">0.00</span></label>
+          <input type="range" id="s-color_vibrance" min="-0.5" max="1" step="0.05" value="0">
+          <div class="hint">Saturates muted colours more than vivid ones.</div>
+        </div>
+        <div class="field colorfield">
+          <label>Saturation: <span id="color_saturation_label">1.00</span></label>
+          <input type="range" id="s-color_saturation" min="0" max="2" step="0.05" value="1">
+        </div>
+        <div class="field colorfield">
+          <label>Contrast: <span id="color_contrast_label">1.00</span></label>
+          <input type="range" id="s-color_contrast" min="0.8" max="1.2" step="0.01" value="1">
+        </div>
+        <div class="field colorfield">
+          <label>Brightness: <span id="color_brightness_label">0.00</span></label>
+          <input type="range" id="s-color_brightness" min="-0.1" max="0.1" step="0.01" value="0">
+        </div>
+      </div>
+      <h3>Frame rate</h3>
+      <div class="grid">
+        <div class="field">
+          <label>Frame rate in levels</label>
+          <select id="s-frame_rate">
+            <option value="30">30 FPS — original console behavior</option>
+            <option value="60">60 FPS (default)</option>
+            <option value="90">90 FPS</option>
+            <option value="120">120 FPS</option>
+            <option value="144">144 FPS</option>
+            <option value="165">165 FPS</option>
+            <option value="240">240 FPS</option>
+            <option value="0">Unlimited</option>
+          </select>
+          <div class="hint">The game shipped at 30 FPS. Above 60, frames are timed precisely
+            while physics keeps stepping 60 times a second, as at 60. Pick your display's refresh
+            rate: frames beyond it are never shown, and with Unlimited they are dropped unevenly.
+            If random deaths happen in a scripted part such as "Lisa the Tree Hugger", switch to 30
+            for that part. Restart needed.</div>
+        </div>
+        <div class="field">
+          <label>Frame rate in menus</label>
+          <select id="s-menu_frame_rate">
+            <option value="30">30 FPS — as made (default)</option>
+            <option value="0">Same as in levels</option>
+          </select>
+          <div class="hint">Menus, loading screens and the pause menu were made for 30 FPS and
+            animate at 30 either way. With "Same as in levels" they are drawn at the level frame
+            rate while their logic keeps its 30 FPS pace, so nothing runs faster. Restart needed.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Keyboard &amp; mouse</h2>
+      <div class="grid">
+        <div class="field">
+          <label class="switch"><input type="checkbox" id="s-mnk_mode"> Play with keyboard &amp; mouse</label>
+          <div class="hint">The game takes the mouse while its window is active (Alt+Tab lets go),
+            and a controller keeps working alongside. In the game, F1 shows these controls.</div>
+        </div>
+        <div class="field">
+          <label>Mouse sensitivity: <span id="senslabel">1.0</span></label>
+          <input type="range" id="s-mnk_sensitivity" min="0.2" max="3" step="0.1" value="1">
+          <label class="switch" style="margin-top:12px"><input type="checkbox" id="s-mnk_invert_y">
+            Invert mouse look up / down</label>
+        </div>
+      </div>
+      <table class="ctrltable" id="ctrltable"></table>
+      <div style="margin-top:14px; display:flex; align-items:center; gap:12px">
+        <button class="smallbtn" id="ctrlresetall">Reset all controls</button>
+        <span class="ctrlhint">Change: press a key, click a mouse button or turn the wheel. + adds
+          another key for the same action. The mouse always looks around; the camera keys are extra.</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>In-game overlay keys</h2>
+      <p class="muted">The keys that open the game's own overlays, one keyboard key each. They work
+        whether you play with a controller or with keyboard &amp; mouse.</p>
+      <table class="ctrltable" id="overlaytable"></table>
+    </div>
+
+    <div class="card">
+      <h2>Game</h2>
+      <div class="grid">
+        <div class="field">
+          <label>Language</label>
+          <select id="s-user_language">
+            <option value="1">English</option>
+            <option value="2">日本語 (Japanese)</option>
+            <option value="3">Deutsch (German)</option>
+            <option value="4">Français (French)</option>
+            <option value="5">Español (Spanish)</option>
+            <option value="6">Italiano (Italian)</option>
+          </select>
+          <div class="hint">Only languages present on your disc will have translated assets.</div>
+        </div>
+        <div class="field">
+          <label class="switch"><input type="checkbox" id="s-subtitles"> Always show subtitles</label>
+          <div class="hint">Shows subtitles from the very first cutscene of a new game, before the
+            in-game option can be reached. While on, the in-game subtitle option has no effect.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Audio</h2>
+      <div class="grid">
+        <div class="field">
+          <label class="switch"><input type="checkbox" id="s-audio_mute"> Mute all audio</label>
+        </div>
+        <div class="field">
+          <label>Audio buffer</label>
+          <select id="s-audio_maxqframes">
+            <option value="16">Small — lowest latency</option>
+            <option value="32">Normal (recommended)</option>
+            <option value="64">Large — most stutter-resistant</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Launcher</h2>
+      <div class="grid">
+        <div class="field">
+          <label>Theme</label>
+          <select id="s-ui_theme">
+            <option value="system">Same as my system</option>
+            <option value="light">Light — Springfield by day</option>
+            <option value="dark">Dark — Springfield by night</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <p class="autosave">Changes are saved as you make them. Ones marked "Restart needed" apply the
+      next time the game starts.</p>
+  </section>
+
+  <div class="modal hidden" id="capturemodal">
+    <div class="box" style="width:480px">
+      <div class="head"><span>Choose a key</span><button class="smallbtn" id="capturecancel">Cancel</button></div>
+      <div class="capturebox" id="capturebox" tabindex="0"><span id="capturelead">Press a key, click a mouse button here, or turn the wheel</span>
+        <div class="sub">for <b id="captureaction"></b></div></div>
+    </div>
+  </div>
+
+  <!-- ============================ PATCHES =========================== -->
+  <section id="tab-patches" class="hidden">
+    <div class="card">
+      <h2>Game patches</h2>
+      <p class="muted">One-click tweaks applied to your installed copy. Everything is reversible.</p>
+      <div id="patchlist"></div>
+    </div>
+  </section>
+
+  <!-- ============================= MODS ============================= -->
+  <section id="tab-mods" class="hidden">
+    <div class="card">
+      <div class="lockart">Not yet available</div>
+      <h2 style="justify-content:center">Mods — coming soon</h2>
+      <p class="muted" style="text-align:center">
+        A mod loader (texture packs, model swaps, gameplay tweaks) is planned.<br>
+        Drop files into <code>launcher/mods/</code> — they'll be listed here, ready for the loader.
+      </p>
+      <table id="modtable" style="margin-top:14px"></table>
+    </div>
+  </section>
+
+  <!-- ============================ SUPPORT =========================== -->
+  <section id="tab-support" class="hidden">
+    <div class="callout info">
+      <span class="tag">Help</span>
+      <div>Game crashing, showing a <b>black screen</b>, or stuttering? Turn on diagnostic
+      logging below, play until the problem happens, then create a <b>support bundle</b> and
+      attach it to a GitHub issue. Everything stays on your machine until you decide to
+      share it.</div>
+    </div>
+    <div class="card">
+      <h2>Diagnostic logging</h2>
+      <label class="switch"><input type="checkbox" id="diagtoggle">
+        Log my game sessions (crashes, black screens &amp; performance)</label>
+      <p class="muted" id="diagstate" style="margin-top:10px"></p>
+    </div>
+    <div class="card">
+      <h2>Last game session</h2>
+      <div id="diagsummary" class="muted">No diagnostic sessions recorded yet —
+        enable logging above, then press Play.</div>
+    </div>
+    <div class="card">
+      <h2>Session log</h2>
+      <div class="console" id="diaglog" style="height:260px">–</div>
+      <p class="muted" id="diagdir" style="margin-top:8px"></p>
+    </div>
+    <div class="card">
+      <h2>Performance capture</h2>
+      <p class="muted">Records which parts of the game are actually expensive: how many draw calls
+        each frame and which game routine issues them, how many shader variants get built, and
+        where frame time goes. Used to decide what to optimise next. It slows the game slightly
+        and writes an extra log, so leave it off for normal play.</p>
+      <div class="callout warn" style="margin-top:12px">
+        <span class="tag">How</span>
+        <div>Arm it, launch the game, play the scene you care about for a minute or two, then
+          <b>quit the game normally</b> — force-killing it loses the data. Then create a support
+          bundle below; the capture is included automatically.</div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="bigbtn" id="capturebtn">Arm performance capture</button>
+        <span class="muted" id="capturemsg"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Support bundle</h2>
+      <p class="muted">Packs your recent session logs, performance samples, system info and
+        settings into a single zip you can attach to a
+        <a href="#" target="_blank" rel="noopener" id="issueslink">GitHub issue</a>.
+        It contains no save data and no game content, and nothing is uploaded automatically.</p>
+      <div class="row" style="margin-top:12px">
+        <button class="bigbtn gold" id="bundlebtn">Create support bundle</button>
+        <span class="muted" id="bundlemsg"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= ABOUT ============================ -->
+  <section id="tab-about" class="hidden">
+    <div class="card" id="updatecard">
+      <h2>Updates</h2>
+      <div class="row">
+        <button class="bigbtn" id="updatebtn">Check for updates</button>
+        <button class="bigbtn gold hidden" id="applyupdatebtn">Update now</button>
+        <span class="muted" id="updatemsg"></span>
+      </div>
+    </div>
+
+    <div class="callout danger">
+      <span class="tag">Legal</span>
+      <div><b>Ownership &amp; legal notice.</b> <i>The Simpsons Game</i> © 2007 Electronic Arts /
+      Fox. This is an unaffiliated, non-commercial preservation/compatibility project — it is
+      not endorsed by, sponsored by, or affiliated with EA, Fox, or any rightsholder. It
+      contains <b>zero</b> original game assets, code, or copyrighted content of any kind; it
+      only reads and translates data from a copy of the game <b>you legally own</b>. You are
+      responsible for complying with your local laws regarding backups/format-shifting of
+      media you own. No warranty of any kind is provided — use at your own risk.</div>
+    </div>
+
+    <div class="card">
+      <h2>About</h2>
+      <p class="muted">
+        <b>The Simpsons Game — Recompiled</b> <span id="verlabel"></span> is a fan-made
+        <b>static recompilation</b>: the original Xbox 360 game code is translated ahead-of-time
+        into a native executable for your machine, rather than emulated instruction-by-instruction
+        at runtime — running against a Xenia-derived GPU/kernel layer (the ReXGlue SDK).
+      </p>
+      <h3>Platform status</h3>
+      <p class="muted">
+        • <b>Linux / Steam Deck</b> — playable: menus, saves, video, full gameplay.<br>
+        • <b>Windows</b> — playable, less tested than Linux.<br>
+        • <b>Android</b> — planned.
+      </p>
+      <h3>Credits</h3>
+      <p class="muted">
+        • Static recompilation approach in the style of
+        <a href="https://github.com/hedge-dev/XenonRecomp" target="_blank" rel="noopener">XenonRecomp</a>.<br>
+        • GPU/kernel emulation via the ReXGlue SDK, derived from
+        <a href="https://xenia.jp" target="_blank" rel="noopener">Xenia</a>, the Xbox 360 emulator.<br>
+        • Uses SDL3, Dear ImGui, glslang/SPIRV-Tools, FFmpeg, spdlog, fmt, and the Tracy
+        profiler, each under their own open-source licenses.<br>
+        • Launcher lettering: Luckiest Guy by Astigmatic, under the Apache License 2.0.<br>
+        <span id="aboutgithub"></span>
+      </p>
+    </div>
+
+    <div class="footer-legal">
+      Not affiliated with Electronic Arts, Fox, or Microsoft. Xbox 360 and related marks are
+      trademarks of their respective owners. This project distributes no game data — you must
+      supply your own legally-owned copy.
+    </div>
+  </section>
+</div>
+
+<div class="toast" id="toast">Saved</div>
+
+<!-- update prompt modal (shown automatically at startup when a newer
+     release is found; the About tab keeps the manual path) -->
+<div class="modal hidden" id="updatemodal">
+  <div class="box" style="width:520px">
+    <div class="head"><b>Update available</b>
+      <button class="smallbtn" id="updatelater">Later</button></div>
+    <div style="padding:20px">
+      <p class="muted" id="updatemodaltext" style="margin-bottom:16px"></p>
+      <div class="row">
+        <button class="bigbtn gold" id="updatenowbtn">Update now</button>
+        <span class="muted" id="updatemodalprogress"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- file browser modal -->
+<div class="modal hidden" id="browsemodal">
+  <div class="box">
+    <div class="head"><b>Choose your game ISO</b>
+      <button class="smallbtn" id="browseclose">Close</button></div>
+    <div class="path" id="browsepath"></div>
+    <div class="list" id="browselist"></div>
+  </div>
+</div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = s => document.querySelector(s);
+const api = {
+  get: p => fetch(p, {headers:{"X-Token":TOKEN}}).then(r => r.json()),
+  post: (p, body) => fetch(p, {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
+                              body: JSON.stringify(body||{})}).then(r => r.json()),
+};
+
+/* theme */
+let themePref = "__THEME__";
+{
+  const forced = /[?&]theme=(light|dark)/.exec(location.search);
+  if (forced) themePref = forced[1];
+}
+if (!["system", "light", "dark"].includes(themePref)) themePref = "system";
+const darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+function applyTheme(pref){
+  themePref = pref;
+  const dark = pref === "dark" || (pref === "system" && darkQuery && darkQuery.matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+if (darkQuery) darkQuery.addEventListener("change", () => { if (themePref === "system") applyTheme("system"); });
+function saveTheme(pref){
+  applyTheme(pref);
+  $("#s-ui_theme").value = pref;
+  syncSelectLabel($("#s-ui_theme"));
+  api.post("/api/ui-theme", {theme: pref}).catch(() => {});
+}
+$("#themebtn").onclick = () => saveTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+
+let toastTimer = null;
+function showToast(text){
+  const t = $("#toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+/* custom dropdowns (replaces native <select> popups, which are separate
+   OS-level windows that don't reliably render inside the embedded browser
+   view). Wraps each <select>, hides it, and drives it from a same-DOM panel
+   -- the hidden <select>'s .value stays the single source of truth. */
+function enhanceSelects(){
+  document.querySelectorAll("section select").forEach(sel => {
+    if (sel.closest(".customselect")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "customselect";
+    sel.parentNode.insertBefore(wrap, sel);
+    wrap.appendChild(sel);
+
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "customselect-trigger";
+    trigger.innerHTML = '<span class="label"></span><span class="arrow">▼</span>';
+    wrap.appendChild(trigger);
+
+    const panel = document.createElement("div");
+    panel.className = "customselect-panel";
+    wrap.appendChild(panel);
+
+    const closeAll = () => document.querySelectorAll(".customselect.open")
+      .forEach(w => w.classList.remove("open"));
+
+    const rebuildPanel = () => {
+      panel.innerHTML = "";
+      [...sel.options].forEach(opt => {
+        const row = document.createElement("div");
+        row.className = "customselect-option" + (opt.value === sel.value ? " sel" : "");
+        row.textContent = opt.textContent;
+        row.onclick = () => {
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event("change", {bubbles:true}));
+          syncSelectLabel(sel);
+          closeAll();
+        };
+        panel.appendChild(row);
+      });
+    };
+
+    trigger.onclick = () => {
+      const isOpen = wrap.classList.contains("open");
+      closeAll();
+      if (!isOpen) { rebuildPanel(); wrap.classList.add("open"); }
+    };
+
+    syncSelectLabel(sel);
+  });
+  document.addEventListener("click", e => {
+    if (!e.target.closest(".customselect")) document.querySelectorAll(".customselect.open")
+      .forEach(w => w.classList.remove("open"));
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") document.querySelectorAll(".customselect.open")
+      .forEach(w => w.classList.remove("open"));
+  });
+}
+function syncSelectLabel(sel){
+  const wrap = sel.closest(".customselect");
+  if (!wrap) return;
+  const opt = sel.options[sel.selectedIndex];
+  wrap.querySelector(".customselect-trigger").disabled = sel.disabled;
+  wrap.querySelector(".customselect-trigger .label").textContent = opt ? opt.textContent : "";
+}
+function syncAllSelectLabels(){
+  document.querySelectorAll(".customselect > select").forEach(syncSelectLabel);
+}
+$("#s-ui_theme").value = themePref;
+enhanceSelects();
+
+/* donut sprinkles */
+(() => {
+  const d = $("#donut"), colors = ["#ffffff","#57B9E8","#FFD90F","#7CB342","#8E24AA","#F2711C"];
+  for (let i = 0; i < 12; i++){
+    const s = document.createElement("i"), a = i / 12 * 2 * Math.PI, r = 17;
+    s.style.left = (29 + Math.cos(a) * r - 3) + "px"; s.style.top = (29 + Math.sin(a) * r - 1) + "px";
+    s.style.background = colors[i % colors.length];
+    s.style.transform = `rotate(${(a * 57 + 90) | 0}deg)`; d.appendChild(s);
+  }
+  d.onclick = () => {
+    d.classList.add("fast");
+    showToast("Mmm… donut.");
+    setTimeout(() => d.classList.remove("fast"), 1200);
+  };
+})();
+
+/* tabs */
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  document.querySelectorAll("section").forEach(s => s.classList.add("hidden"));
+  $("#tab-" + b.dataset.tab).classList.remove("hidden");
+  if (b.dataset.tab === "support") refreshDiag();
+});
+// A tab can be opened from the address (#settings).
+{
+  const tab = document.querySelector(`nav button[data-tab="${location.hash.slice(1)}"]`);
+  if (tab) tab.click();
+}
+
+/* hero art rotation: a new picture every 15 s, and none while the game runs,
+   the Play tab is closed or the launcher isn't on screen, so the launcher costs
+   no CPU next to the game. */
+let artList = [], artIdx = 0, artVersion = 0, shownArtVersion = -1;
+setInterval(() => {
+  if (artList.length < 2 || (lastStatus && lastStatus.running) ||
+      document.visibilityState !== "visible" || $("#tab-play").classList.contains("hidden")) return;
+  artIdx = (artIdx + 1) % artList.length;
+  const img = $("#heroimg");
+  img.style.opacity = 0;
+  setTimeout(() => { img.src = "/art/" + artList[artIdx] + "?v=" + artVersion; img.style.opacity = 1; }, 500);
+}, 15000);
+
+/* status polling */
+let lastStatus = null;
+let lastPatchSig = "";  /* last patch list drawn by refresh() */
+async function refresh(){
+  try{
+    const st = await api.get("/api/status");
+    lastStatus = st;
+    renderCapture(st.capture_armed);
+    artList = st.art || [];
+    artVersion = st.art_version || 0;
+    $("#hero").classList.toggle("noart", !artList.length);
+    $("#heroplaceholder").textContent = st.art_running ? "Grabbing pictures from your cutscenes…" :
+      st.gamedata_ready ? "No pictures yet — Install tab → Launcher artwork → Regenerate" :
+      "Install your game and Springfield shows up here";
+    const img = $("#heroimg");
+    // Regeneration reuses the same filenames, so the mtime version has to be
+    // part of the URL or the browser keeps showing the old image (and setting
+    // src to an identical URL is a no-op).
+    const wantSrc = artList.length ? "/art/" + artList[0] + "?v=" + artVersion : "";
+    if (wantSrc && img.getAttribute("src") !== wantSrc &&
+        (!img.getAttribute("src") || artVersion !== shownArtVersion)) {
+      img.src = wantSrc;
+      artIdx = 0;
+      shownArtVersion = artVersion;
+    }
+    const regenBtn = $("#regenart");
+    if (regenBtn) {
+      regenBtn.disabled = !!st.art_running;
+      regenBtn.textContent = st.art_running ? "Generating…" : "Regenerate";
+    }
+    const ready = st.engine_ready && st.gamedata_ready;
+    $("#playbtn").disabled = !ready || st.running;
+    $("#playbtn").textContent = st.running ? "Running…" : "Play";
+    $("#stopbtn").classList.toggle("hidden", !st.running);
+    $("#playstatus").textContent = st.running ? "Game is running — have fun in Springfield!" :
+      ready ? `Ready to play · engine build ${st.engine_date} · launcher v${st.version}` :
+      !st.engine_ready ? "Engine binary missing — build the project first" :
+      "Game data not installed — open the Install tab and use your ISO";
+    $("#platformbadges").innerHTML = st.platforms.map(p =>
+      `<span class="badge ${p.state}"><span class="dot"></span>${p.name} — ${p.state}</span>`).join("");
+    $("#verlabel").textContent = "v" + st.version;
+    $("#verchip").textContent = "v" + st.version;
+    if (st.update && st.update.checked) {
+      $("#updatemsg").textContent = st.update.applying ? (st.update.apply_msg || "Updating…") : st.update.msg;
+      $("#applyupdatebtn").classList.toggle("hidden", !st.update.update_available);
+      $("#applyupdatebtn").disabled = !!st.update.applying;
+      $("#updatebtn").disabled = !!st.update.applying;
+      maybePromptUpdate(st.update, st.version);
+    }
+    if (st.github_repo) {
+      $("#aboutgithub").innerHTML = `• Source code: <a href="https://github.com/${st.github_repo}" target="_blank" rel="noopener">github.com/${st.github_repo}</a>`;
+      $("#issueslink").href = `https://github.com/${st.github_repo}/issues`;
+    }
+    /* install progress - same selection-preserving rules as the game console */
+    const inst = st.install;
+    const ilog = $("#installlog");
+    const itext = (inst.log && inst.log.length) ? inst.log.join("\n") : "–";
+    const isel = window.getSelection();
+    if (itext !== ilog.textContent && !(isel && !isel.isCollapsed && ilog.contains(isel.anchorNode))) {
+      const iStuck = ilog.scrollHeight - ilog.scrollTop - ilog.clientHeight < 24;
+      ilog.textContent = itext;
+      if (iStuck) ilog.scrollTop = 1e9;
+    }
+    $("#installbtn").disabled = inst.running;
+    $("#installstate").innerHTML = inst.running ? "Working…" :
+      inst.ok === true ? '<span class="ok">Installed successfully.</span>' :
+      inst.ok === false ? '<span class="err">Install failed — see log below.</span>' :
+      st.gamedata_ready ? "Game data is installed. You can re-install over it from another ISO." :
+      "No game data found yet.";
+    /* backups */
+    $("#backuptable").innerHTML = (st.backups||[]).map(b =>
+      `<tr><td>${b.name}</td><td>${b.date}</td><td>${b.size_kb} KB</td>
+       <td><button class="smallbtn" onclick="restoreSave('${b.name}')">Restore</button></td></tr>`).join("") ||
+      "<tr><td class='muted'>No backups yet.</td></tr>";
+    /* mods */
+    $("#modtable").innerHTML = (st.mods||[]).map(m => `<tr><td>${m}</td><td class="muted">waiting for mod loader</td></tr>`).join("") ||
+      "<tr><td class='muted'>No mod files found.</td></tr>";
+    /* patches (redrawn only when they change: a redraw would close an open dropdown) */
+    const patchSig = JSON.stringify(st.patches||[]);
+    if (patchSig !== lastPatchSig) {
+      lastPatchSig = patchSig;
+      $("#patchlist").innerHTML = (st.patches||[]).map(p => `
+        <div class="patchrow">
+          <div><b>${p.name}</b><div class="desc">${p.desc}</div></div>
+          ${p.available && p.options
+            ? `<div style="min-width:280px"><select onchange="setPatchOption('${p.id}', this.value)">
+                 ${p.options.map(o => `<option value="${o.id}" ${o.id===p.state?"selected":""}>${o.name}</option>`).join("")}
+               </select></div>`
+            : p.available && (p.state === "on" || p.state === "off")
+            ? `<button class="bigbtn ${p.state==="on"?"alt":""}" onclick="togglePatch('${p.id}', ${p.state!=="on"})">
+                 ${p.state==="on" ? "Enabled — click to disable" : "Enable"}</button>`
+            : `<span class="muted">${p.state}</span>`}
+        </div>`).join("");
+      enhanceSelects();
+    }
+  }catch(e){ $("#playstatus").textContent = "launcher backend unreachable"; }
+}
+setInterval(refresh, 2000); refresh();
+
+/* input banner reflects mnk setting */
+function updateBanner(mnk){
+  const b = $("#inputbanner"), t = $("#inputbannertext");
+  if (mnk){
+    b.classList.add("kbm");
+    t.innerHTML = "Playing with <u>keyboard &amp; mouse</u> — press F1 in the game to see the controls. A controller also works.";
+  } else {
+    b.classList.remove("kbm");
+    t.innerHTML = "Set up for a <u>controller</u> — to play with keyboard &amp; mouse, turn it on in Settings → Keyboard &amp; mouse.";
+  }
+}
+
+/* game log
+   Rewriting textContent destroys any selection the user is making inside the
+   pane, so only touch the DOM when the text actually changed, and stop polling
+   once the game has exited (the file is static then). Keep polling for one
+   extra cycle after the game stops so the final lines still land. */
+let lastLogText = null, logPollAfterStop = 0;
+setInterval(async () => {
+  if ($("#tab-play").classList.contains("hidden")) return;
+  const running = !lastStatus || lastStatus.running;
+  if (running) {
+    logPollAfterStop = 1;
+  } else if (logPollAfterStop > 0) {
+    logPollAfterStop--;
+  } else {
+    return;
+  }
+  const r = await api.get("/api/log").catch(()=>null);
+  if (!r || !r.lines) return;
+  const el = $("#gamelog");
+  const text = r.lines.join("\n") || "–";
+  if (text === lastLogText) return;
+  lastLogText = text;
+  // Don't yank the pane out from under someone reading or selecting it.
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && el.contains(sel.anchorNode)) return;
+  const stuckToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  el.textContent = text;
+  if (stuckToBottom) el.scrollTop = 1e9;
+}, 3000);
+
+/* Ctrl+A inside a console pane selects that pane, not the whole launcher. */
+document.addEventListener("keydown", e => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "a") return;
+  const pane = e.target.closest && e.target.closest(".console");
+  if (!pane) return;
+  e.preventDefault();
+  const range = document.createRange();
+  range.selectNodeContents(pane);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+});
+
+$("#copylogbtn").onclick = async () => {
+  const btn = $("#copylogbtn"), text = $("#gamelog").textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied!";
+  } catch (err) {
+    // Clipboard access can be denied; fall back to selecting it for Ctrl+C.
+    const range = document.createRange();
+    range.selectNodeContents($("#gamelog"));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    btn.textContent = "Press Ctrl+C";
+  }
+  setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+};
+
+/* play / stop / steam */
+$("#playbtn").onclick = async () => {
+  // A setting changed a moment ago is written before the game reads it.
+  await flushSettings();
+  api.post("/api/launch").then(r => {
+    $("#playstatus").textContent = r.ok ? "" : ("Launch failed: " + (r.msg || r.error || "unknown error"));
+    refresh();
+  }).catch(e => { $("#playstatus").textContent = "Launch request failed: " + e; });
+};
+$("#stopbtn").onclick = () => api.post("/api/stop").then(r => {
+  if (!r.ok) $("#playstatus").textContent = "Stop failed: " + (r.msg || r.error || "unknown error");
+  refresh();
+}).catch(e => { $("#playstatus").textContent = "Stop request failed: " + e; });
+$("#steambtn").onclick = async () => {
+  const r = await api.post("/api/add-to-steam");
+  $("#steammsg").textContent = r.msg;
+};
+
+/* install + browse modal */
+$("#installbtn").onclick = () => {
+  const iso = $("#isopath").value.trim();
+  if (!iso) { alert("Choose your ISO file first (Browse…)."); return; }
+  api.post("/api/install", {iso_path: iso}).then(refresh);
+};
+$("#regenart").onclick = () => {
+  const b = $("#regenart");
+  b.disabled = true;
+  b.textContent = "Generating…";
+  api.post("/api/regen-art").then(refresh);
+};
+function closeBrowse(){ $("#browsemodal").classList.add("hidden"); }
+$("#browsebtn").onclick = () => { $("#browsemodal").classList.remove("hidden"); loadBrowse("").catch(closeBrowse); };
+$("#browseclose").addEventListener("click", closeBrowse);
+$("#browsemodal").addEventListener("click", e => { if (e.target === $("#browsemodal")) closeBrowse(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape"){ closeBrowse(); $("#updatemodal").classList.add("hidden"); }
+});
+async function loadBrowse(path){
+  const d = await api.get("/api/browse?path=" + encodeURIComponent(path));
+  $("#browsepath").textContent = d.path || "Choose a starting location";
+  const list = $("#browselist");
+  list.textContent = "";
+  const addEntry = (label, extra, fn) => {
+    const div = document.createElement("div");
+    div.className = "entry";
+    const s1 = document.createElement("span"); s1.textContent = label; div.appendChild(s1);
+    if (extra){ const s2 = document.createElement("span"); s2.className = "muted"; s2.textContent = extra; div.appendChild(s2); }
+    div.onclick = fn;
+    list.appendChild(div);
+  };
+  if (d.up !== null && d.path) addEntry("..", "", () => loadBrowse(d.up));
+  for (const e of d.entries){
+    if (e.dir) addEntry(e.name, "", () => loadBrowse(e.path));
+    else addEntry(e.name, e.size_mb + " MB", () => pickIso(e.path));
+  }
+  if (!d.entries.length && !(d.up !== null && d.path)){
+    const div = document.createElement("div"); div.className = "entry muted";
+    div.textContent = "No folders or ISO files here."; list.appendChild(div);
+  }
+}
+function pickIso(p){ $("#isopath").value = p; closeBrowse(); }
+
+/* saves */
+$("#backupbtn").onclick = async () => {
+  const r = await api.post("/api/backup-saves");
+  $("#backupmsg").textContent = r.msg;
+  refresh();
+};
+async function restoreSave(name){
+  if (!confirm("Restore this backup? Current saves will be overwritten.")) return;
+  const r = await api.post("/api/restore-saves", {name});
+  $("#backupmsg").textContent = r.ok ? "Restored." : r.msg;
+}
+
+/* patches */
+async function setPatchOption(id, value){
+  try {
+    const r = await api.post("/api/patch", {id, value});
+    if (!r.ok) alert("Patch failed: " + (r.msg || r.error || "unknown error"));
+  } catch (e) {
+    alert("Patch request failed: " + e);
+  }
+  refresh();
+}
+async function togglePatch(id, enable){
+  try {
+    const r = await api.post("/api/patch", {id, enable});
+    if (!r.ok) alert("Patch failed: " + (r.msg || r.error || "unknown error"));
+  } catch (e) {
+    alert("Patch request failed: " + e);
+  }
+  refresh();
+}
+
+/* diagnostics / support */
+async function refreshDiag(){
+  if ($("#tab-support").classList.contains("hidden")) return;
+  const d = await api.get("/api/diagnostics").catch(()=>null);
+  if (!d) return;
+  $("#diagtoggle").checked = d.enabled;
+  $("#diagstate").innerHTML = d.enabled
+    ? 'Diagnostic logging is <b class="ok">ON</b> — every Play session records the game\'s ' +
+      'output plus CPU, RAM and GPU samples every 2 seconds. The overhead is negligible, ' +
+      'so it\'s fine to leave on.'
+    : 'Diagnostic logging is <b>OFF</b> — flip it on if the game crashes, black-screens or ' +
+      'runs badly, then play until the problem happens again.';
+  const s = d.last_summary;
+  if (s){
+    const rows = [
+      ["When", s.ended || ""],
+      ["Result", s.exit_desc || ""],
+      ["Duration", (s.duration_s ?? "?") + " s"],
+      s.peak_rss_mb ? ["Peak game RAM", s.peak_rss_mb + " MB"] : null,
+      s.avg_cpu_percent != null ? ["Average CPU", s.avg_cpu_percent + "%"] : null,
+      s.max_gpu_percent != null ? ["Peak GPU busy", s.max_gpu_percent + "%"] : null,
+    ].filter(Boolean);
+    const okExit = s.exit_code === 0;
+    $("#diagsummary").innerHTML =
+      "<table>" + rows.map(r => `<tr><th style="width:170px">${r[0]}</th><td>${r[1]}</td></tr>`).join("") + "</table>" +
+      `<div class="callout ${okExit ? "info" : "warn"}" style="margin:12px 0 0">` +
+      `<span class="tag">${okExit ? "OK" : "Issue"}</span><div>${s.diagnosis || ""}</div></div>`;
+  }
+  $("#diaglog").textContent = (d.tail && d.tail.length) ? d.tail.join("\n") : "–";
+  $("#diaglog").scrollTop = 1e9;
+  if (d.dir) $("#diagdir").textContent = "Logs are saved to " + d.dir;
+}
+setInterval(refreshDiag, 3000); refreshDiag();
+$("#diagtoggle").onchange = async e => {
+  await api.post("/api/diagnostics", {enable: e.target.checked}).catch(()=>null);
+  refreshDiag();
+};
+function renderCapture(armed){
+  const b = $("#capturebtn");
+  b.textContent = armed ? "Disarm performance capture" : "Arm performance capture";
+  b.classList.toggle("gold", !armed);
+  if (armed && !$("#capturemsg").textContent) {
+    $("#capturemsg").textContent = "Armed — takes effect next launch.";
+  }
+}
+$("#capturebtn").onclick = async () => {
+  const armed = $("#capturebtn").textContent.startsWith("Disarm");
+  $("#capturemsg").textContent = "…";
+  try {
+    const r = await api.post("/api/capture", { enable: !armed });
+    $("#capturemsg").textContent = r.msg || "";
+    renderCapture(r.armed);
+  } catch (e) {
+    $("#capturemsg").textContent = "Failed: " + e;
+  }
+};
+$("#bundlebtn").onclick = async () => {
+  $("#bundlemsg").textContent = "packing…";
+  const r = await api.post("/api/support-bundle").catch(()=>({ok:false, msg:"request failed"}));
+  $("#bundlemsg").textContent = r.ok ? "Saved: " + r.msg : (r.msg || "failed");
+};
+
+/* automatic update prompt: the backend checks GitHub in the background at
+   every launcher start; the first status poll that reports a newer release
+   pops this dialog once per run. "Later" just closes it — the About tab
+   keeps the manual path, and the prompt returns on the next launch. */
+let updatePromptShown = false;
+function maybePromptUpdate(u, currentVersion){
+  const modal = $("#updatemodal");
+  if (!modal.classList.contains("hidden")){
+    /* dialog is open — mirror live progress while the update applies */
+    if (u.applying){
+      $("#updatenowbtn").disabled = true;
+      $("#updatemodalprogress").textContent = u.apply_msg || "Updating…";
+    } else if (u.apply_msg && !u.update_available){
+      $("#updatenowbtn").disabled = true;
+      $("#updatemodalprogress").textContent = u.apply_msg;
+    }
+    return;
+  }
+  if (u.update_available && !u.applying && !updatePromptShown){
+    updatePromptShown = true;
+    $("#updatemodaltext").innerHTML =
+      `A new version of the launcher &amp; game engine is out: <b>${u.latest_tag}</b> ` +
+      `(you're on <b>v${currentVersion}</b>).<br><br>Updating takes a minute and doesn't ` +
+      `touch your saves, settings or installed game data. Update now?`;
+    $("#updatenowbtn").disabled = false;
+    $("#updatemodalprogress").textContent = "";
+    modal.classList.remove("hidden");
+  }
+}
+$("#updatelater").onclick = () => $("#updatemodal").classList.add("hidden");
+$("#updatemodal").addEventListener("click", e => {
+  if (e.target === $("#updatemodal")) $("#updatemodal").classList.add("hidden");
+});
+$("#updatenowbtn").onclick = async () => {
+  $("#updatenowbtn").disabled = true;
+  $("#updatemodalprogress").textContent = "starting update…";
+  await api.post("/api/apply-update").catch(() => {
+    $("#updatemodalprogress").textContent = "update request failed — try the About tab";
+  });
+};
+
+/* updates */
+$("#updatebtn").onclick = async () => {
+  $("#updatemsg").textContent = "checking…";
+  await api.post("/api/check-updates");
+  setTimeout(refresh, 1500);
+};
+$("#applyupdatebtn").onclick = async () => {
+  if (!confirm("Download and install the latest release now? Close the game first if it's running.")) return;
+  $("#updatemsg").textContent = "starting update…";
+  await api.post("/api/apply-update");
+};
+
+/* keyboard & mouse controls */
+const CONTROLS = [
+  ["keybind_lstick_up", "Move forward", "Left stick"],
+  ["keybind_lstick_down", "Move back", "Left stick"],
+  ["keybind_lstick_left", "Move left", "Left stick"],
+  ["keybind_lstick_right", "Move right", "Left stick"],
+  ["keybind_walk", "Walk (hold)", ""],
+  ["keybind_rstick_up", "Look up", "Right stick"],
+  ["keybind_rstick_down", "Look down", "Right stick"],
+  ["keybind_rstick_left", "Look left", "Right stick"],
+  ["keybind_rstick_right", "Look right", "Right stick"],
+  ["keybind_a", "Jump / confirm", "A"],
+  ["keybind_x", "Attack", "X"],
+  ["keybind_b", "Special attack (hold to charge) / back", "B"],
+  ["keybind_y", "Action — talk, use, pick up", "Y"],
+  ["keybind_left_trigger", "Target (hold)", "LT"],
+  ["keybind_right_trigger", "Right trigger", "RT"],
+  ["keybind_left_shoulder", "Left bumper", "LB"],
+  ["keybind_right_shoulder", "Right bumper", "RB"],
+  ["keybind_dpad_up", "Switch character — up", "D-pad"],
+  ["keybind_dpad_right", "Switch character — right", "D-pad"],
+  ["keybind_dpad_down", "Switch character — down", "D-pad"],
+  ["keybind_dpad_left", "Switch character — left", "D-pad"],
+  ["keybind_back", "To-do list", "Back"],
+  ["keybind_start", "Pause", "Start"],
+  ["keybind_lstick_press", "Left stick click", "LS"],
+  ["keybind_rstick_press", "Right stick click", "RS"],
+];
+const OVERLAY_KEYS = [
+  ["bind_controls", "Keyboard & mouse controls list"],
+  ["bind_settings", "Settings, keys can be changed there too"],
+  ["bind_debug_overlay", "FPS & debug overlay"],
+  ["bind_console", "Console"],
+  ["bind_freecam", "Free camera on/off (controller: L3+R3)"],
+  ["bind_photo_mode", "Photo mode: world paused, HUD hidden (controller: Y with the free camera on)"],
+];
+let binds = {}, bindDefaults = {};
+// Browser key codes to the game's key names.
+const CODE_NAMES = {Space:"Space", Enter:"Enter", NumpadEnter:"NumpadEnter", Escape:"Escape",
+  Tab:"Tab", Backspace:"Backspace", Delete:"Delete", Insert:"Insert", Home:"Home", End:"End",
+  PageUp:"PageUp", PageDown:"PageDown", ArrowLeft:"Left", ArrowRight:"Right", ArrowUp:"Up",
+  ArrowDown:"Down", ShiftLeft:"Shift", ShiftRight:"Shift", ControlLeft:"Control",
+  ControlRight:"Control", AltLeft:"Alt", AltRight:"Alt", Backquote:"Backtick", Minus:"Minus",
+  Equal:"Plus", Comma:"Comma", Period:"Period", Semicolon:"Semicolon", Slash:"Slash",
+  Backslash:"Backslash", BracketLeft:"LBracket", BracketRight:"RBracket", Quote:"Quote",
+  NumpadAdd:"NumpadPlus", NumpadSubtract:"NumpadMinus", NumpadMultiply:"NumpadStar",
+  NumpadDivide:"NumpadSlash", CapsLock:"CapsLock", NumLock:"NumLock", ScrollLock:"ScrollLock",
+  PrintScreen:"PrintScreen", Pause:"Pause"};
+function codeToKeyName(code){
+  if (CODE_NAMES[code]) return CODE_NAMES[code];
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(code))) return m[1];
+  if ((m = /^Digit([0-9])$/.exec(code))) return m[1];
+  if ((m = /^Numpad([0-9])$/.exec(code))) return "Numpad" + m[1];
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+  return null;
+}
+const MOUSE_NAMES = {0:"LMB", 1:"MMB", 2:"RMB", 3:"Mouse4", 4:"Mouse5"};
+const KEY_LABELS = {LMB:"Left click", RMB:"Right click", MMB:"Middle click", Mouse4:"Mouse 4",
+  Mouse5:"Mouse 5", WheelUp:"Wheel up", WheelDown:"Wheel down", Control:"Ctrl", Ctrl:"Ctrl",
+  Escape:"Esc", Esc:"Esc", Backtick:"`", Minus:"-", Plus:"=", Comma:",", Period:".",
+  Semicolon:";", Slash:"/", Backslash:"\\", LBracket:"[", RBracket:"]", Quote:"'",
+  Left:"←", Right:"→", Up:"↑", Down:"↓", Return:"Enter"};
+function splitKeys(v){ return (v || "").split(",").map(k => k.trim()).filter(Boolean); }
+function keyCounts(){
+  const counts = {};
+  for (const [key] of CONTROLS.concat(OVERLAY_KEYS))
+    for (const k of splitKeys(binds[key])) counts[k] = (counts[k] || 0) + 1;
+  return counts;
+}
+function keyChips(keys, counts){
+  return keys.length
+    ? keys.map(k => `<span class="keychip${counts[k] > 1 ? " dupe" : ""}" title="${counts[k] > 1 ? "Also used by another action" : k}">${KEY_LABELS[k] || k}</span>`).join("")
+    : `<span class="keychip none">unbound</span>`;
+}
+function renderOverlayKeys(counts){
+  const table = $("#overlaytable");
+  table.innerHTML = "";
+  for (const [key, label] of OVERLAY_KEYS) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="act">${label}</td><td>${keyChips(splitKeys(binds[key]), counts)}</td>
+      <td class="rowbtns"><button class="smallbtn" data-act="set">Change</button><button class="smallbtn" data-act="reset" title="Default">↺</button></td>`;
+    tr.querySelector('[data-act="set"]').onclick = () => openCapture(key, label, false, true);
+    tr.querySelector('[data-act="reset"]').onclick = () => { binds[key] = bindDefaults[key]; renderControls(); scheduleSave(); };
+    table.appendChild(tr);
+  }
+}
+function renderControls(){
+  const counts = keyCounts();
+  renderOverlayKeys(counts);
+  const table = $("#ctrltable");
+  table.innerHTML = "";
+  for (const [key, label, pad] of CONTROLS) {
+    const tr = document.createElement("tr");
+    const chips = keyChips(splitKeys(binds[key]), counts);
+    tr.innerHTML = `<td class="act">${label}${pad ? `<span class="pad">${pad}</span>` : ""}</td>
+      <td>${chips}</td>
+      <td class="rowbtns"><button class="smallbtn" data-act="set">Change</button><button class="smallbtn" data-act="add" title="Add another key">+</button><button class="smallbtn" data-act="clear" title="Remove the keys">✕</button><button class="smallbtn" data-act="reset" title="Default">↺</button></td>`;
+    tr.querySelector('[data-act="set"]').onclick = () => openCapture(key, label, false);
+    tr.querySelector('[data-act="add"]').onclick = () => openCapture(key, label, true);
+    tr.querySelector('[data-act="clear"]').onclick = () => { binds[key] = ""; renderControls(); scheduleSave(); };
+    tr.querySelector('[data-act="reset"]').onclick = () => { binds[key] = bindDefaults[key]; renderControls(); scheduleSave(); };
+    table.appendChild(tr);
+  }
+}
+let capture = null;
+function openCapture(key, label, add, keyboardOnly){
+  capture = {key, add, keyboardOnly: !!keyboardOnly};
+  $("#capturelead").textContent = keyboardOnly ? "Press a key"
+    : "Press a key, click a mouse button here, or turn the wheel";
+  $("#captureaction").textContent = label;
+  $("#capturemodal").classList.remove("hidden");
+  $("#capturebox").focus();
+}
+function closeCapture(){ capture = null; $("#capturemodal").classList.add("hidden"); }
+function finishCapture(name, fromMouse){
+  if (!capture || !name) return;
+  // The overlay keys are read from keyboard events only.
+  if (fromMouse && capture.keyboardOnly) return;
+  const keys = capture.add ? splitKeys(binds[capture.key]) : [];
+  if (!keys.includes(name)) keys.push(name);
+  binds[capture.key] = keys.join(",");
+  closeCapture();
+  renderControls();
+  scheduleSave();
+}
+window.addEventListener("keydown", e => {
+  if (!capture) return;
+  e.preventDefault(); e.stopPropagation();
+  finishCapture(codeToKeyName(e.code));
+}, true);
+$("#capturebox").addEventListener("mousedown", e => { e.preventDefault(); finishCapture(MOUSE_NAMES[e.button], true); });
+$("#capturebox").addEventListener("contextmenu", e => e.preventDefault());
+$("#capturebox").addEventListener("wheel", e => { e.preventDefault(); if (e.deltaY) finishCapture(e.deltaY < 0 ? "WheelUp" : "WheelDown", true); }, {passive:false});
+$("#capturecancel").onclick = closeCapture;
+$("#ctrlresetall").onclick = () => {
+  for (const [key] of CONTROLS) binds[key] = bindDefaults[key];
+  renderControls();
+  scheduleSave();
+};
+
+/* settings: every change is saved straight away (a Save button at the bottom
+   of the page was easy to miss, and changes were lost without it - #34) */
+let settingsLoaded = false, saveTimer = null, savePending = false;
+function updateSharpnessField(){
+  $("#fsrsharpfield").classList.toggle("hidden", $("#s-present_effect").value !== "fsr");
+}
+const COLOR_KEYS = ["color_vibrance", "color_saturation", "color_contrast", "color_brightness"];
+const COLOR_PRESETS = {
+  original: {color_vibrance: 0, color_saturation: 1, color_contrast: 1, color_brightness: 0},
+  vivid: {color_vibrance: 0.35, color_saturation: 1.1, color_contrast: 1.05, color_brightness: 0},
+  punchy: {color_vibrance: 0.5, color_saturation: 1.15, color_contrast: 1.1, color_brightness: 0},
+  soft: {color_vibrance: -0.1, color_saturation: 0.95, color_contrast: 0.95, color_brightness: 0.02},
+};
+async function loadSettings(){
+  const s = await api.get("/api/settings"); const v = s.values;
+  $("#s-fullscreen").value = String(v.fullscreen);
+  $("#s-resolution").value = v.resolution || "";
+  $("#s-gpu").value = v.gpu || "";
+  $("#s-render_target_path_vulkan").value = v.render_target_path_vulkan || "native";
+  $("#s-vulkan_device").value = v.vulkan_device || "";
+  $("#s-vsync").checked = v.vsync;
+  $("#s-present_letterbox").checked = v.present_letterbox;
+  $("#s-resolution_scale").value = String(v.resolution_scale);
+  $("#s-native_rt_original_resolution_targets").value =
+      v.native_rt_original_resolution_targets || "";
+  $("#s-swap_post_effect").value = v.swap_post_effect || "none";
+  $("#s-ink_outlines").value = v.ink_outlines || "original";
+  $("#s-ink_outline_strength").value = v.ink_outline_strength ?? 0.6;
+  savedInkColor = (v.ink_outline_color || "000000").replace(/^#/, "").toUpperCase();
+  $("#s-ink_outline_color").value = savedInkColor;
+  updateInkFields(true);
+  $("#s-eye_shading").value = v.eye_shading || "clean";
+  $("#s-character_tessellation").value =
+      ["off", "low", "medium", "high"].includes(v.character_tessellation)
+          ? v.character_tessellation : "off";
+  updateVulkanGraphicsFields();
+  for (const key of COLOR_KEYS) $(`#s-${key}`).value = v[key] ?? COLOR_PRESETS.original[key];
+  updateColorFields(true);
+  $("#s-present_effect").value = v.present_effect || "bilinear";
+  $("#s-present_fsr_sharpness_reduction").value = String(Number(v.present_fsr_sharpness_reduction));
+  $("#s-anisotropic_override").value = String(v.anisotropic_override);
+  for (const key of ["frame_rate", "menu_frame_rate"]) {
+    const select = $(`#s-${key}`);
+    select.value = String(v[key]);
+    if (select.value !== String(v[key])) {
+      // A rate the list doesn't offer, set by hand: show it as its own entry.
+      const option = document.createElement("option");
+      option.value = String(v[key]);
+      option.textContent = `${v[key]} FPS`;
+      select.appendChild(option);
+      select.value = String(v[key]);
+    }
+  }
+  $("#s-mnk_mode").checked = v.mnk_mode;
+  $("#s-mnk_sensitivity").value = v.mnk_sensitivity;
+  $("#senslabel").textContent = Number(v.mnk_sensitivity).toFixed(1);
+  $("#s-mnk_invert_y").checked = !!v.mnk_invert_y;
+  for (const [key] of CONTROLS.concat(OVERLAY_KEYS)) { binds[key] = v[key] ?? ""; bindDefaults[key] = (s.defaults || {})[key] ?? ""; }
+  renderControls();
+  $("#s-user_language").value = String(v.user_language);
+  $("#s-subtitles").checked = !!v.subtitles;
+  $("#s-audio_mute").checked = v.audio_mute;
+  $("#s-audio_maxqframes").value = String(v.audio_maxqframes);
+  updateBanner(v.mnk_mode);
+  updateSharpnessField();
+  syncAllSelectLabels();
+  settingsLoaded = true;
+}
+loadSettings();
+function settingsValues(){
+  return {
+    fullscreen: $("#s-fullscreen").value === "true",
+    resolution: $("#s-resolution").value,
+    gpu: $("#s-gpu").value,
+    render_target_path_vulkan: $("#s-render_target_path_vulkan").value,
+    vulkan_device: $("#s-vulkan_device").value,
+    vsync: $("#s-vsync").checked,
+    present_letterbox: $("#s-present_letterbox").checked,
+    resolution_scale: Number($("#s-resolution_scale").value),
+    native_rt_original_resolution_targets: $("#s-native_rt_original_resolution_targets").value,
+    swap_post_effect: $("#s-swap_post_effect").value,
+    ink_outlines: $("#s-ink_outlines").value,
+    ink_outline_strength: Number($("#s-ink_outline_strength").value),
+    ink_outline_color: inkColorValue(),
+    eye_shading: $("#s-eye_shading").value,
+    character_tessellation: $("#s-character_tessellation").value,
+    ...Object.fromEntries(COLOR_KEYS.map(key => [key, Number($(`#s-${key}`).value)])),
+    present_effect: $("#s-present_effect").value,
+    present_fsr_sharpness_reduction: Number($("#s-present_fsr_sharpness_reduction").value),
+    anisotropic_override: Number($("#s-anisotropic_override").value),
+    frame_rate: Number($("#s-frame_rate").value),
+    menu_frame_rate: Number($("#s-menu_frame_rate").value),
+    mnk_mode: $("#s-mnk_mode").checked,
+    mnk_sensitivity: Number($("#s-mnk_sensitivity").value),
+    mnk_invert_y: $("#s-mnk_invert_y").checked,
+    ...binds,
+    user_language: Number($("#s-user_language").value),
+    subtitles: $("#s-subtitles").checked,
+    audio_mute: $("#s-audio_mute").checked,
+    audio_maxqframes: Number($("#s-audio_maxqframes").value),
+  };
+}
+async function saveSettings(){
+  savePending = false;
+  try {
+    const values = settingsValues();
+    await api.post("/api/settings", {values});
+    savedInkColor = values.ink_outline_color;
+    updateBanner($("#s-mnk_mode").checked);
+    showToast(lastStatus && lastStatus.running ? "Saved — restart the game to apply" : "Saved");
+  } catch (e) {
+    showToast("Couldn't save settings");
+  }
+}
+function scheduleSave(){
+  if (!settingsLoaded) return;
+  savePending = true;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveSettings, 250);
+}
+async function flushSettings(){
+  if (!savePending) return;
+  clearTimeout(saveTimer);
+  await saveSettings();
+}
+document.querySelectorAll("#tab-settings select, #tab-settings input").forEach(el => {
+  if (el.id === "s-ui_theme") return;
+  el.addEventListener("change", scheduleSave);
+});
+$("#s-present_effect").addEventListener("change", updateSharpnessField);
+function updateVulkanGraphicsFields(){
+  const gpu = $("#s-gpu").value;
+  const unavailable = gpu !== "" && gpu !== "vulkan";
+  for (const key of ["character_tessellation", "color_preset", ...COLOR_KEYS]) {
+    const field = $(`#s-${key}`);
+    field.disabled = unavailable;
+    syncSelectLabel(field);
+    if (unavailable) field.closest(".customselect")?.classList.remove("open");
+  }
+}
+$("#s-gpu").addEventListener("change", updateVulkanGraphicsFields);
+/* ink outlines: strength only for soft lines, no colour without lines; the
+   colour is a preset or a custom RRGGBB, and the swatch shows what is set */
+let savedInkColor = "000000";
+function inkColorValue(){
+  const preset = $("#s-ink_color_preset").value;
+  const hex = (preset === "custom" ? $("#s-ink_outline_color").value : preset)
+      .trim().replace(/^#/, "").toUpperCase();
+  return /^[0-9A-F]{6}$/.test(hex) ? hex : savedInkColor;
+}
+function updateInkFields(fromLoad){
+  const mode = $("#s-ink_outlines").value;
+  $("#inkstrengthfield").classList.toggle("hidden", mode !== "soft");
+  $("#inkcolorfield").classList.toggle("hidden", mode === "off");
+  $("#inkstrengthlabel").textContent = Number($("#s-ink_outline_strength").value).toFixed(2);
+  if (fromLoad) {
+    const hex = $("#s-ink_outline_color").value;
+    const presets = [...$("#s-ink_color_preset").options].map(o => o.value);
+    $("#s-ink_color_preset").value = presets.includes(hex) ? hex : "custom";
+  }
+  const custom = $("#s-ink_color_preset").value === "custom";
+  $("#s-ink_outline_color").classList.toggle("hidden", !custom);
+  const typed = $("#s-ink_outline_color").value.trim().replace(/^#/, "");
+  const valid = !custom || /^[0-9A-Fa-f]{6}$/.test(typed);
+  $("#inkcolorhint").textContent = valid ? "Any colour as RRGGBB hex. Restart needed."
+                                         : "Enter six hex digits, e.g. FF8000 (previous colour is kept).";
+  $("#inkswatch").style.background = "#" + inkColorValue();
+}
+$("#s-ink_outlines").addEventListener("change", () => updateInkFields(false));
+$("#s-ink_color_preset").addEventListener("change", () => updateInkFields(false));
+$("#s-ink_outline_strength").addEventListener("input", () => updateInkFields(false));
+$("#s-ink_outline_color").addEventListener("input", () => {
+  updateInkFields(false);
+  if (/^#?[0-9A-Fa-f]{6}$/.test($("#s-ink_outline_color").value.trim())) scheduleSave();
+});
+/* colour grading: presets fill the sliders, which show Custom once moved */
+function updateColorFields(fromLoad){
+  if (fromLoad) {
+    const current = Object.fromEntries(COLOR_KEYS.map(key => [key, Number($(`#s-${key}`).value)]));
+    const match = Object.entries(COLOR_PRESETS).find(([, preset]) =>
+        COLOR_KEYS.every(key => Math.abs(preset[key] - current[key]) < 1e-6));
+    $("#s-color_preset").value = match ? match[0] : "custom";
+  }
+  const custom = $("#s-color_preset").value === "custom";
+  document.querySelectorAll(".colorfield").forEach(el => el.classList.toggle("hidden", !custom));
+  for (const key of COLOR_KEYS) {
+    $(`#${key}_label`).textContent = Number($(`#s-${key}`).value).toFixed(2);
+  }
+}
+$("#s-color_preset").addEventListener("change", () => {
+  const preset = COLOR_PRESETS[$("#s-color_preset").value];
+  if (preset) for (const key of COLOR_KEYS) $(`#s-${key}`).value = preset[key];
+  updateColorFields(false);
+});
+for (const key of COLOR_KEYS) {
+  $(`#s-${key}`).addEventListener("input", () => updateColorFields(false));
+}
+$("#s-mnk_sensitivity").addEventListener("input", e => {
+  $("#senslabel").textContent = Number(e.target.value).toFixed(1);
+});
+$("#s-ui_theme").addEventListener("change", e => saveTheme(e.target.value));
+</script>
+</body>
+</html>

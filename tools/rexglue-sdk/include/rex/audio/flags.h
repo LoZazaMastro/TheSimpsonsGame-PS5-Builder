@@ -1,0 +1,19 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2013 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ *
+ * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+ */
+
+#pragma once
+
+#include <rex/cvar.h>
+
+REXCVAR_DECLARE(bool, audio_mute);
+REXCVAR_DECLARE(std::string, audio_dump_file);
+REXCVAR_DECLARE(bool, audio_log_underruns);
+REXCVAR_DECLARE(bool, ffmpeg_verbose);

@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "source_uploads": [
+    {
+      "path": "assets/source/cover.png",
+      "bytes": 852177,
+      "sha256": "d14c51178d73ed7d3e7b573914132c0989e3b23d3ba0a2a39aaed56b35d6922e",
+      "uploaded_filename": "Cover.png"
+    },
+    {
+      "path": "assets/source/home-background.png",
+      "bytes": 2137144,
+      "sha256": "8435649ffeb20dc063c60b2172d2a7b7aa6c448c41705e91e1166d7961b5cde9",
+      "uploaded_filename": "Background.png"
+    },
+    {
+      "path": "assets/source/launch-background.png",
+      "bytes": 2205192,
+      "sha256": "3b51d79b8e9901d1518fed39fb1f48424952ce4e001c3fd6ab4a64823b00cce5",
+      "uploaded_filename": "IMG Launch.png"
+    },
+    {
+      "path": "assets/source/menu-music.mp3",
+      "bytes": 1602429,
+      "sha256": "4b751f7abe3b90653fd79ae1eb4c5d459374475c44f2648057ada77ee1adc6b8",
+      "uploaded_filename": "The Simpsons Game Soundtrack - Menu Music.mp3"
+    }
+  ],
+  "reference": {
+    "repository": "https://github.com/Nazky/UnleashedRecomp-Prospero",
+    "commit": "a63abf2db139b04da90989024da5bc804d11323a",
+    "converter_sha256": {
+      "tools/png_to_bc7_dds/png_to_bc7_dds.cpp": "7d0a88d6876824d71d925309667f659e0f7ee39d632304e47b30b7f31e989e25",
+      "tools/wav_to_at9/wav_to_at9.cpp": "0b0b2daa75417e8371167436de6079f20754c8da6ba9f0fed49e7838d573ff3f"
+    },
+    "audio_patch": {
+      "path": "tools/wav_to_at9_unity.patch",
+      "bytes": 834,
+      "sha256": "e07ac6773f076161d7bee99ee1e9abefbfd8c38212378e148bc0b8539b899272"
+    }
+  },
+  "outputs": [
+    {
+      "path": "sce_sys/icon0.png",
+      "bytes": 315694,
+      "sha256": "38a461cd27eaee56a09c626d77ab4415a5d82c8245137d3d5a5e32b54103eece"
+    },
+    {
+      "path": "sce_sys/pic0.dds",
+      "bytes": 8294548,
+      "sha256": "463c86d03ddbf53ddf4ca0cbbe531f8f2840cece6c8a56ec8351ec1ca67bfdb1"
+    },
+    {
+      "path": "sce_sys/pic1.dds",
+      "bytes": 8294548,
+      "sha256": "7469f7f47579e0fb8100a179aa6c609cd56b1adcff66da8d78e43d177c258461"
+    },
+    {
+      "path": "sce_sys/pic0.png",
+      "bytes": 5908614,
+      "sha256": "31edef2efcec3b36fd46e3a0e33a48b467ca1c083d704b1274b083efb16e23c5"
+    },
+    {
+      "path": "sce_sys/pic1.png",
+      "bytes": 6178301,
+      "sha256": "56d19f9be654b9665a252383530ef2e7b124e57b94e86e51943b7c016731cb8f"
+    },
+    {
+      "path": "sce_sys/snd0.at9",
+      "bytes": 1804200,
+      "sha256": "edc5400d3cb9ff0ba95953128294101a299861116f2513363bd4e8316e893dd4"
+    }
+  ],
+  "image_recipe": {
+    "source_dimensions": [
+      2048,
+      1152
+    ],
+    "target_dimensions": [
+      3840,
+      2160
+    ],
+    "crop": false,
+    "creative_edits": false,
+    "resampler": "stb_image_resize2 srgb",
+    "dds_dxgi_format": 98,
+    "dds_resource_dimension": 3,
+    "mip_levels": 1
+  },
+  "audio_recipe": {
+    "gain_db": -7.020599913279623,
+    "normalization": false,
+    "limiter": false,
+    "added_fades": false,
+    "intermediate_format": "Original MP3 to float64 stereo48000Hz; volume=0.4456254690668728:precision=double; then PCM16. Preserves earlier gain0.5 and adds -1dB before a single ATRAC9 encode.",
+    "pcm_full_scale_saturation": false,
+    "trimmed": false,
+    "loop": "complete track, with source silence preserved",
+    "bytes": 1804200,
+    "samples": 4810432,
+    "rate": 48000,
+    "seconds": 100.21733333333333,
+    "bitrate": 144000,
+    "loop_start": 256,
+    "loop_end_inclusive": 4810687,
+    "gain_linear": 0.4456254690668728,
+    "gain_verification": {
+      "path": "assets/audio-gain-verification.json",
+      "bytes": 577,
+      "sha256": "476d2e087038053016bc3c61eb73688716660b95f825fde44e2c41d05d398e42"
+    },
+    "previous_gain_linear": 0.5,
+    "additional_gain_db": -1.0,
+    "relative_gain_audit": {
+      "path": "validation/home-audio-v3.10.5-ui-menu.json",
+      "prior_snd0_sha256": "beee975236b28a694e43161bb7e3102b56e6f8db3ef436a5c3ae904241f1248d",
+      "gain_db": -1.0,
+      "decoded_rms_gain_db": -0.9999053901533692,
+      "master_reencoded_baseline_identical": true
+    }
+  },
+  "validation": {
+    "sonic_validate_assets": "passed",
+    "dds_decode_and_visual_review": "passed",
+    "libatrac9_full_decode": {
+      "status": "PASS",
+      "errors": 0,
+      "frames": 18792,
+      "superframes": 4698,
+      "channels": 2,
+      "sample_rate": 48000,
+      "samples_per_channel": 4810432,
+      "encoder_delay_removed_samples": 256,
+      "alignment": "Both streams trimmed by the identical fact/smpl encoder delay and sample count."
+    },
+    "ffmpeg_6_1_1_decode": "Not used as the full ATRAC9 validation gate for this revision. The historical gain0.5 audit reported a parser disagreement; complete current decoding is verified using libatrac9.",
+    "ps5_hardware": {
+      "evidence": "User report",
+      "prior_snd0_sha256": "5ba72d557c4a5acee2acfd521ad0c31c7f0e737b65a879fc93cf340ffe6c8e10",
+      "prior_gain_linear": 1.0,
+      "reported_result": "The previous Home music was audible on PS5 and too loud.",
+      "scope": "Confirms audibility of the previous Home audio only; does not establish full-track or gameplay behavior.",
+      "current_gain_0_5_revision_tested_on_hardware": false,
+      "current_additional_minus_1db_revision_tested_on_hardware": false
+    },
+    "pcm_gain": {
+      "all_float_samples_exact_gain": true,
+      "gain_linear": 0.4456254690668728,
+      "rms_gain_ratio": 0.4456254690666231,
+      "samples_checked": 9620864,
+      "pcm16_max_quantization_error_lsb": 0.49999995893767846,
+      "pcm16_saturation": false
+    }
+  },
+  "icon_recipe": {
+    "source_dimensions": [
+      1024,
+      1024
+    ],
+    "target_dimensions": [
+      512,
+      512
+    ],
+    "mode": "RGBA",
+    "resampler": "Pillow LANCZOS",
+    "creative_edits": false
+  },
+  "application_title": "The Simpsons Game"
+}

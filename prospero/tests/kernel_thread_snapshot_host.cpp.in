@@ -1,0 +1,329 @@
+// Exact KernelState methods, object_ref template and ObjectTable enumeration
+// are injected by the runner. Dependency doubles expose ownership changes at
+// the real global-unlock boundary; no guest execution is modeled.
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <concepts>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <setjmp.h>
+#include <thread>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#define REXSYS_DEBUG(...) ((void)0)
+#define REXSYS_ERROR(...) ((void)0)
+#define REX_PLATFORM_PROSPERO 1
+using namespace std::chrono_literals;
+static void Check(bool value,const char* message) {
+  if (!value) { std::fprintf(stderr,"FAIL %s\n",message); std::abort(); }
+}
+static bool Await(const std::function<bool()>& test) {
+  const auto end=std::chrono::steady_clock::now()+3s;
+  while (!test()) {
+    if (std::chrono::steady_clock::now()>end) return false;
+    std::this_thread::sleep_for(1ms);
+  }
+  return true;
+}
+struct GlobalRegion {
+  std::recursive_mutex mutex;
+  std::function<void()> on_explicit_unlock;
+  std::atomic<int> held{0};
+  struct Lock {
+    GlobalRegion* region;
+    std::unique_lock<std::recursive_mutex> lock_;
+    explicit Lock(GlobalRegion& r):region(&r),lock_(r.mutex) { ++region->held; }
+    Lock(Lock&& other):region(other.region),lock_(std::move(other.lock_)) {}
+    ~Lock() { if (lock_.owns_lock()) --region->held; }
+    void unlock() {
+      --region->held; lock_.unlock();
+      if (region->on_explicit_unlock) {
+        auto callback=std::move(region->on_explicit_unlock);
+        region->on_explicit_unlock={}; callback();
+      }
+    }
+    void lock() { lock_.lock(); ++region->held; }
+    bool owns_lock() const { return lock_.owns_lock(); }
+  };
+  Lock Acquire() { return Lock(*this); }
+};
+
+namespace rex::thread {
+enum class WaitResult { kSuccess,kFailed };
+template<class Native> WaitResult Wait(Native* thread,bool) { return thread->Wait(); }
+}
+
+namespace rex::system {
+class XObject {
+ public:
+  enum class Type { Other,Thread };
+  std::atomic<unsigned> pointer_ref_count_{1};
+  Type type_;
+  explicit XObject(Type type):type_(type) {}
+  virtual ~XObject()=default;
+  Type type() const { return type_; }
+  void Retain();
+  void Release();
+};
+
+@RETAIN_RELEASE@
+
+@OBJECT_REF@
+
+struct ObjectTable {
+  struct Entry { XObject* object=nullptr; };
+  GlobalRegion& global_critical_region_;
+  std::vector<Entry> table_;
+  uint32_t table_capacity_=0;
+  explicit ObjectTable(GlobalRegion& r):global_critical_region_(r) {}
+  @GET_OBJECTS_TEMPLATE@
+  void GetObjectsByType(XObject::Type,std::vector<object_ref<XObject>>*);
+  void Add(XObject* object) {
+    auto lock=global_critical_region_.Acquire(); object->Retain();
+    table_.push_back({object}); table_capacity_=uint32_t(table_.size());
+  }
+  void Clear() {
+    auto lock=global_critical_region_.Acquire();
+    for (auto& entry:table_) {
+      auto* object=entry.object; entry.object=nullptr;
+      if (object) object->Release();
+    }
+  }
+};
+
+@GET_OBJECTS@
+
+struct Probe {
+  std::atomic<unsigned> suspends{0},terminates{0},waits{0},destroyed{0};
+  std::atomic<bool> destructor_entered{false};
+  std::atomic<bool> cancel_requested{false},allow_cleanup{false},cleanup_finished{false};
+  bool defer_cleanup=false,fail_wait=false;
+  unsigned refs_at_self_terminate=0;
+  int locks_at_self_terminate=-1;
+};
+struct KernelState;
+struct XThread: XObject {
+  static constexpr Type kObjectType=Type::Thread;
+  static thread_local XThread* current;
+  KernelState* kernel;
+  Probe* probe;
+  uint32_t id;
+  bool guest=true,running=true,native=true;
+  struct Native {
+    XThread* thread;
+    bool Suspend() { ++thread->probe->suspends; return true; }
+    rex::thread::WaitResult Wait();
+  } native_thread{this};
+  XThread(KernelState& k,Probe& p,uint32_t value):XObject(Type::Thread),kernel(&k),probe(&p),id(value) {}
+  ~XThread() override;
+  uint32_t thread_id() const { return id; }
+  bool is_guest_thread() const { return guest; }
+  bool is_running() const { return running; }
+  Native* thread() { return native? &native_thread:nullptr; }
+  static bool IsInThread(XThread* thread) { return current==thread; }
+  static bool IsInThread() { return current!=nullptr; }
+  static XThread* GetCurrentThread() { return current; }
+  void Terminate(int);
+};
+thread_local XThread* XThread::current=nullptr;
+struct KernelState {
+  GlobalRegion& global_critical_region_;
+  ObjectTable table;
+  std::unordered_map<uint32_t,XThread*> threads_by_id_;
+  explicit KernelState(GlobalRegion& r):global_critical_region_(r),table(r) {}
+  ObjectTable* object_table() { return &table; }
+  void Register(XThread* thread) { threads_by_id_[thread->thread_id()]=thread; }
+  void TerminateTitle();
+  object_ref<XThread> GetThreadByID(uint32_t);
+  void UnregisterThread(XThread*);
+};
+
+@TERMINATE_TITLE@
+
+@GET_THREAD_BY_ID@
+
+@UNREGISTER_THREAD@
+
+static sigjmp_buf self_exit;
+XThread::~XThread() {
+  probe->destructor_entered.store(true);
+  kernel->UnregisterThread(this);
+  ++probe->destroyed;
+}
+void XThread::Terminate(int) {
+  // Deliberately read an instance field here: ASan detects the baseline
+  // caller's use of the destroyed raw suspended_threads element.
+  Probe* const p=probe;
+  ++p->terminates;
+  if (IsInThread(this)) {
+    p->refs_at_self_terminate=pointer_ref_count_.load();
+    p->locks_at_self_terminate=kernel->global_critical_region_.held.load();
+    // Native pthread_exit need not destroy the method's automatic objects.
+    // This jump provides that exact no-unwind boundary without a fake PASS
+    // caused by a C++ exception unwinding the snapshot vectors.
+    siglongjmp(self_exit,1);
+  }
+  running=false;
+  p->cancel_requested.store(true);
+  if (!p->defer_cleanup) p->cleanup_finished.store(true);
+}
+rex::thread::WaitResult XThread::Native::Wait() {
+  auto* p=thread->probe;
+  ++p->waits;
+  Check(thread->kernel->global_critical_region_.held.load()==0,"native wait runs outside the kernel global lock");
+  if (p->fail_wait) return rex::thread::WaitResult::kFailed;
+  p->allow_cleanup.store(true);
+  Check(Await([&]{return p->cleanup_finished.load();}),"native wait completes all deferred cleanup");
+  return rex::thread::WaitResult::kSuccess;
+}
+} // namespace rex::system
+
+using namespace rex::system;
+struct Fixture {
+  GlobalRegion region;
+  KernelState kernel{region};
+  Probe first,second,third;
+  object_ref<XThread> owner;
+  object_ref<XThread> Make(Probe& p,uint32_t id,unsigned handles=1) {
+    object_ref<XThread> object(new XThread(kernel,p,id));
+    kernel.Register(object.get());
+    for (unsigned i=0;i<handles;++i) kernel.table.Add(object.get());
+    return object;
+  }
+};
+
+static void Overlap() {
+  Fixture f; f.owner=f.Make(f.first,77);
+  f.region.on_explicit_unlock=[&] { f.kernel.table.Clear(); f.owner.reset(); };
+  f.kernel.TerminateTitle();
+  Check(f.first.suspends==1 && f.first.terminates==1,"one stable target across execution-owner release");
+  Check(f.first.destroyed==1 && f.kernel.threads_by_id_.empty(),"snapshot eventually releases the target once");
+}
+static void DuplicateHandles(bool baseline) {
+  Fixture f;
+  auto first=f.Make(f.first,77,3); auto second=f.Make(f.second,78,2);
+  const unsigned a=first->pointer_ref_count_.load(),b=second->pointer_ref_count_.load();
+  f.kernel.TerminateTitle();
+  Check(f.first.suspends==1 && f.first.terminates==1 && f.second.suspends==1 && f.second.terminates==1,
+        "duplicate handles never duplicate suspend or terminate");
+  Check(f.first.waits==(baseline?0u:1u) && f.second.waits==(baseline?0u:1u),"fixed version joins each unique native thread once");
+  Check(first->pointer_ref_count_==a && second->pointer_ref_count_==b,"all snapshot references released");
+  f.kernel.table.Clear(); first.reset(); second.reset();
+  Check(f.first.destroyed==1 && f.second.destroyed==1,"duplicates release both threads exactly once");
+}
+static Fixture* self_fixture;
+static void SelfExit() {
+  // All state read after longjmp is heap-owned, not modified automatic state.
+  self_fixture=new Fixture;
+  auto* f=self_fixture; f->owner=f->Make(f->first,77,2);
+  XThread::current=f->owner.get();
+  const unsigned expected=f->owner->pointer_ref_count_.load();
+  if (sigsetjmp(self_exit,1)==0) f->kernel.TerminateTitle();
+  Check(f->first.refs_at_self_terminate==expected,"snapshot owners are destroyed before no-unwind self exit");
+  Check(f->first.locks_at_self_terminate==0,"global lock released before self exit");
+  Check(f->first.suspends==0 && f->first.terminates==1,"self is terminated once after others");
+  XThread::current=nullptr; f->kernel.table.Clear(); f->owner.reset();
+  Check(f->first.destroyed==1,"self owner eventually releases exactly once");
+  delete f; self_fixture=nullptr;
+}
+static void DestructingLookup(bool baseline,bool fault) {
+  Fixture f; f.owner=f.Make(f.first,77);
+  f.kernel.table.Clear();
+  auto lock=f.region.Acquire();
+  std::thread finishing([&] { f.owner.reset(); });
+  Check(Await([&]{return f.first.destructor_entered.load();}),"destructor reached unregister while lock held");
+  auto found=f.kernel.GetThreadByID(77);
+  std::printf("lookup_resurrected_destructing_thread=%d\n",bool(found)); std::fflush(stdout);
+  Check(bool(found)==baseline,"ID lookup never revives a non-owning entry in the fixed version");
+  XThread* invalid=nullptr;
+  if (baseline) invalid=found.release(); // Test-only: never release a resurrected dead object.
+  lock.unlock(); finishing.join();
+  Check(f.first.destroyed==1,"original final release finishes destruction");
+  if (fault && baseline) { volatile uint32_t id=invalid->thread_id(); (void)id; }
+  Check(!f.kernel.GetThreadByID(77),"lookup after unregister is empty");
+}
+static void Lookup() {
+  Fixture f; auto first=f.Make(f.first,77,2);
+  Check(!f.kernel.GetThreadByID(123),"unknown ID lookup is empty");
+  auto found=f.kernel.GetThreadByID(77);
+  Check(found.get()==first.get(),"live lookup returns the matching thread");
+  f.kernel.table.Clear(); first.reset();
+  Check(f.first.destroyed==0 && found->thread_id()==77,"returned lookup owns its thread after handles close");
+  found.reset(); Check(f.first.destroyed==1,"last returned lookup releases object");
+  Check(!f.kernel.GetThreadByID(77),"closed final handle and owner leave empty lookup");
+  f.kernel.TerminateTitle();
+}
+static void ReplacedId(bool baseline) {
+  Fixture f; auto old=f.Make(f.first,77); auto newer=f.Make(f.second,77);
+  f.kernel.UnregisterThread(old.get());
+  auto found=f.kernel.GetThreadByID(77);
+  Check(baseline ? !found : found.get()==newer.get(),"old unregister preserves replacement mapping in fixed version");
+  found.reset(); f.kernel.table.Clear(); old.reset(); newer.reset();
+}
+static void Filter(bool baseline) {
+  Fixture f; auto guest=f.Make(f.first,77); auto host=f.Make(f.second,78); auto stopped=f.Make(f.third,79);
+  host->guest=false; stopped->running=false; stopped->native=false;
+  f.kernel.TerminateTitle();
+  Check(f.first.suspends==1 && f.first.terminates==1,"running guest is stopped");
+  Check(f.first.waits==(baseline?0u:1u),"fixed version waits for stopped guest cleanup");
+  Check(f.second.suspends==0 && f.second.terminates==0 && f.third.suspends==0 && f.third.terminates==0,
+        "host and unstarted or stopped threads are skipped");
+  Check(f.kernel.threads_by_id_.size()==1 && f.kernel.threads_by_id_.at(78)==host.get(),"host mapping remains");
+  f.kernel.table.Clear(); guest.reset(); host.reset(); stopped.reset();
+}
+static void DelayedCleanup(const char* mode,bool baseline) {
+  Fixture f; f.owner=f.Make(f.first,77);
+  const bool running=!std::strcmp(mode,"delayed-cleanup");
+  f.owner->running=running; f.first.defer_cleanup=true;
+  if (!std::strcmp(mode,"finished-cleanup")) f.first.cancel_requested.store(true);
+  std::thread cleanup([&]{
+    Check(Await([&]{return f.first.cancel_requested.load();}),"native thread receives termination");
+    Check(Await([&]{return f.first.allow_cleanup.load();}),"native cleanup is released by wait or test-only reclamation");
+    // Real cleanup unregisters state and frees guest allocations through this
+    // same lock. A Wait while holding it would deadlock this native worker.
+    auto lock=f.region.Acquire();
+    f.first.cleanup_finished.store(true);
+  });
+  f.kernel.TerminateTitle();
+  const bool returned_early=!f.first.cleanup_finished.load();
+  std::printf("title_returned_before_native_cleanup=%d running_at_snapshot=%d\n",returned_early,running);
+  Check(returned_early==baseline,"fixed title termination waits for actual native cleanup");
+  Check(f.first.suspends==(running?1u:0u),"only running guest bodies require suspension");
+  Check(f.first.terminates==(baseline && !running?0u:1u),"suspended and finishing native threads remain termination targets");
+  Check(f.first.waits==(baseline?0u:1u),"each native cleanup receives one wait");
+  // Only the baseline needs external help to release its unjoined worker.
+  f.first.cancel_requested.store(true); f.first.allow_cleanup.store(true);
+  cleanup.join(); f.kernel.table.Clear(); f.owner.reset();
+  Check(f.first.destroyed==1,"thread released after its native cleanup");
+}
+static void FailedWait(bool baseline) {
+  Fixture f; f.owner=f.Make(f.first,77); f.first.fail_wait=true;
+  f.kernel.TerminateTitle();
+  Check(baseline,"fixed version must stop on failed native wait");
+  f.kernel.table.Clear(); f.owner.reset();
+}
+int main(int argc,char**argv) {
+  Check(argc>=2,"case argument"); const bool baseline=argc>2 && !std::strcmp(argv[2],"baseline");
+  const char* mode=argv[1];
+  if (!std::strcmp(mode,"overlap")) Overlap();
+  else if (!std::strcmp(mode,"duplicates")) DuplicateHandles(baseline);
+  else if (!std::strcmp(mode,"self-exit")) SelfExit();
+  else if (!std::strcmp(mode,"lookup-destructing")) DestructingLookup(baseline,false);
+  else if (!std::strcmp(mode,"lookup-destructing-fault")) DestructingLookup(baseline,true);
+  else if (!std::strcmp(mode,"lookup")) Lookup();
+  else if (!std::strcmp(mode,"replaced-id")) ReplacedId(baseline);
+  else if (!std::strcmp(mode,"filter")) Filter(baseline);
+  else if (!std::strcmp(mode,"delayed-cleanup") || !std::strcmp(mode,"startup-suspended") ||
+           !std::strcmp(mode,"finished-cleanup")) DelayedCleanup(mode,baseline);
+  else if (!std::strcmp(mode,"wait-failure")) FailedWait(baseline);
+  else return 2;
+  std::printf("PASS %s hardware=not_run\n",mode);
+}

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RootNamespace>Simpsons.Builder.Desktop</RootNamespace>
+    <AssemblyName>TheSimpsonsGame-PS5-Builder</AssemblyName>
+    <Version>1.0.0</Version>
+    <Product>The Simpsons Game PS5 Builder</Product>
+    <Description>Prepare The Simpsons Game for PS5 using your Xbox 360 disc dump.</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../Assets/app.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+    <BundleAssets Condition="'$(BundleAssets)' == ''">$(MSBuildThisFileDirectory)../Assets</BundleAssets>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Builder.Core/Builder.Core.csproj" />
+    <EmbeddedResource Include="$(BundleAssets)/capabilities.json" LogicalName="Builder.capabilities.json" />
+    <EmbeddedResource Include="$(BundleAssets)/payload.json" LogicalName="Builder.payload.json" />
+    <EmbeddedResource Include="$(BundleAssets)/payload.zip" LogicalName="Builder.payload.zip" />
+    <EmbeddedResource Include="../Assets/LuckiestGuy-Regular.ttf" LogicalName="Builder.title.ttf" />
+    <EmbeddedResource Include="../Assets/cover.png" LogicalName="Builder.cover.png" />
+    <EmbeddedResource Include="../THIRD-PARTY-NOTICES.txt" LogicalName="Builder.notices.txt" />
+    <EmbeddedResource Include="../Assets/PS5-THIRD-PARTY-NOTICES.txt" LogicalName="Builder.ps5-notices.txt" />
+  </ItemGroup>
+  <Target Name="VerifyBundleAssets" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(BundleAssets)/payload.zip') Or !Exists('$(BundleAssets)/payload.json') Or !Exists('$(BundleAssets)/capabilities.json')" Text="Prepare the verified PS5 payload and capability manifest before building the Windows executable. See builder/README.md." />
+  </Target>
+</Project>

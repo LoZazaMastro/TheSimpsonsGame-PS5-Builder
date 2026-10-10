@@ -1,0 +1,61 @@
+Subject: Preserve the real PLT GOT and relocated dynamic-table address
+
+Original converter: Copyright (C) 2026 BlackBearReloaded.
+Patch adaptation: The Simpsons Game Prospero port.
+SPDX-License-Identifier: GPL-3.0-or-later
+
+The published Sonic 1.0.3-PS5 executable has no PLT relocations. The Simpsons
+v2 PIE has nine JUMP_SLOT entries in .got.plt, which is distinct from .got.
+Using .got as DT_PLTGOT gives a loader the wrong resolver header and can
+corrupt unrelated imports. Keep the input PLT GOT base and update GOTPLT[0]
+when rebuilding .dynamic. No source file in the pinned reference is edited.
+
+--- a/sce_module_writer.cpp
++++ b/sce_module_writer.cpp
+@@ -788,6 +788,25 @@
+     const Bytes rela_dynamic = write_relocations(relocations);
+     const Section *source_plt = optional_section(image, ".rela.plt");
+     const Bytes rela_plt = source_plt == nullptr ? Bytes{} : source_plt->data;
++    // DT_PLTGOT is not necessarily .got: imported PLT calls use the reserved
++    // resolver words and jump slots in .got.plt. Preserve lld's actual base.
++    const std::uint64_t source_plt_got = dynamic_value(dynamic_source, kDynamicPltGot);
++    const Section *got_plt = optional_section(image, ".got.plt");
++    if (!rela_plt.empty())
++    {
++        require(got_plt != nullptr && source_plt_got == got_plt->address &&
++                    got_plt->data.size() >= 24,
++                "PLT relocations require the source DT_PLTGOT/.got.plt resolver header");
++        for (const DynamicRelocation &relocation : read_relocations(source_plt))
++            require(static_cast<std::uint32_t>(relocation.info) == 7 &&
++                        relocation.offset >= source_plt_got + 24 &&
++                        relocation.offset + 8 <= source_plt_got + got_plt->size &&
++                        (relocation.offset - source_plt_got) % 8 == 0,
++                    "unsupported PLT relocation or jump slot outside .got.plt");
++        require(read_u64(got_plt->data, 0) == dynamic_source.address,
++                "unexpected source GOTPLT[0] dynamic-table address");
++    }
++    const std::uint64_t native_plt_got = source_plt_got ? source_plt_got : got.address;
+     const Bytes note = build_note();
+ 
+     data_end = std::max(data_end, data_start + 8);
+@@ -803,7 +822,7 @@
+     const Bytes dynamic = build_dynamic(
+         modules, libraries, module_name_offset, file_name_offset, symbol_address, string_address,
+         dynamic_strings.size(), hash_address, hash.size(), jump_address, rela_plt.size(),
+-        got.address, dynamic_symbols.size(), relocation_address, rela_dynamic.size(),
++        native_plt_got, dynamic_symbols.size(), relocation_address, rela_dynamic.size(),
+         relative_count, dynamic_value(dynamic_source, kDynamicPreinitArray),
+         dynamic_value(dynamic_source, kDynamicPreinitArraySize),
+         dynamic_value(dynamic_source, kDynamicInitArray),
+@@ -864,6 +883,11 @@
+     copy_bytes(output, dynamic_file_at(hash_address), hash);
+     copy_bytes(output, dynamic_file_at(note_address), note);
+     copy_bytes(output, dynamic_file_at(dynamic_address), dynamic);
++    // The converter moved .dynamic. Keep the ABI-defined GOTPLT[0] link-time
++    // address consistent with the new PT_DYNAMIC; reserved resolver slots and
++    // the source jump relocations otherwise remain unchanged.
++    if (!rela_plt.empty())
++        write_u64(output, got_plt->file_offset, dynamic_address);
+     copy_bytes(output, comment_file, comment);
+     copy_bytes(output, version_file, version);
+     copy_bytes(output, tail_file, tail_note);

@@ -1,0 +1,17 @@
+{
+  "gain_linear": 0.4456254690668728,
+  "gain_db": -7.020599913279623,
+  "previous_gain_linear": 0.5,
+  "additional_gain_db": -1.0,
+  "samples_per_channel": 4810432,
+  "channels": 2,
+  "rate": 48000,
+  "all_float_samples_exact_gain": true,
+  "rms_gain_ratio": 0.4456254690666231,
+  "source_float_peak": 1.1544219255447388,
+  "reduced_float_peak": 0.5144398120719567,
+  "pcm16_peak": 0.514434814453125,
+  "pcm16_max_quantization_error_lsb": 0.49999995893767846,
+  "pcm16_saturation": false,
+  "snd0_sha256": "edc5400d3cb9ff0ba95953128294101a299861116f2513363bd4e8316e893dd4"
+}

@@ -1,0 +1,63 @@
+THE SIMPSONS GAME - PS5 BUILDER
+Quick start for version 3.10.6
+
+1. Open TheSimpsonsGame-PS5-Builder.exe on Windows 11 x64.
+   The application includes its .NET runtime.
+2. In Game files, select your Xbox 360 ISO/XISO or extracted game folder.
+   Choose an output location for the new PPSA74207 folder.
+3. In Settings, keep the 4K / 60 FPS profile or adjust the options.
+   Native gameplay and menu rates are limited to 30 or 60 FPS.
+4. For optional frame generation, select your Lossless.dll. This enables
+   frame generation and unlocks its settings. You can turn it off if desired.
+5. Choose a game language. English is selected by default; choose a language
+   included on your disc.
+6. Review the Build page and start. When the build finishes, transfer the
+   complete PPSA74207 folder to /data/homebrew/PPSA74207 on your PS5.
+7. Mount the title with ShadowMountPlus.
+
+Your game files and Lossless.dll are not included in the builder.
+Your source files remain unchanged. If PPSA74207 already exists in the output
+location, choose another location.
+
+FRAME GENERATION
+
+Choose a fixed 60/120 FPS target, or Auto with a 2x, 3x or 4x multiplier.
+The game keeps its native simulation rate. A compatible display and connection
+are needed for 120 Hz output. Frame generation is experimental and may add
+input delay or visual artifacts.
+
+Without Lossless.dll, frame generation stays off and its controls are disabled.
+When selected, the file is copied to:
+  PPSA74207/userdata/lossless/Lossless.dll
+
+IN-GAME SETTINGS
+
+L1 + R1 + Options opens the English quick settings menu.
+Frame generation, VSync and colours can be changed during play. Settings that
+need a restart are marked in the menu.
+
+L1 + R1 + L3 + R3 toggles frame generation for the current session.
+Release all four buttons before pressing again. The shortcut does not change
+the saved startup setting. Use the menu switch to save your choice.
+Frame generation pauses while the quick menu is open.
+
+UPDATING AN INSTALLATION
+
+Keep gamedata, userdata and your saves when updating. To apply a new builder
+configuration, copy its userdata/simpsons.toml to the installed title's writable
+userdata folder, keeping the other files.
+
+If you use an .ffpfsc image, rebuild it from the updated folder and mount the
+new image with ShadowMountPlus.
+
+LOGS
+
+Use Open logs, Copy diagnostics or Export full log in the builder.
+The default log folder is:
+  %LOCALAPPDATA%\TheSimpsonsGame-PS5-Builder\logs
+
+For game problems, include your settings and the logs from PPSA74207/logs.
+
+Maintained by LoZazaMastro.
+Full credits and license notices are available in About and the README.
+Donate: https://ko-fi.com/lozazamastro

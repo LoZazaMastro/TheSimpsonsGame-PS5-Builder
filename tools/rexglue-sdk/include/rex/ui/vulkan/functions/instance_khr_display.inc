@@ -1,0 +1,7 @@
+// VK_KHR_display functions used by the native PS5 VideoOut WSI.
+XE_UI_VULKAN_FUNCTION(vkGetPhysicalDeviceDisplayPropertiesKHR)
+XE_UI_VULKAN_FUNCTION(vkGetPhysicalDeviceDisplayPlanePropertiesKHR)
+XE_UI_VULKAN_FUNCTION(vkGetDisplayPlaneSupportedDisplaysKHR)
+XE_UI_VULKAN_FUNCTION(vkGetDisplayModePropertiesKHR)
+XE_UI_VULKAN_FUNCTION(vkGetDisplayPlaneCapabilitiesKHR)
+XE_UI_VULKAN_FUNCTION(vkCreateDisplayPlaneSurfaceKHR)

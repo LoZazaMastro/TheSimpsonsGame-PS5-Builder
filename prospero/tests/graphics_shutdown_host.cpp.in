@@ -1,0 +1,116 @@
+// The runner inserts the exact production Shutdown and MarkVblank methods.
+// Dependency doubles control preemption after the actual CP pointer lookup;
+// this demonstrates ownership order, not Vulkan or guest interrupt execution.
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <thread>
+
+#define REXGPU_INFO(...) ((void)0)
+namespace rex::perf { void TraceEvent(const char*) {} }
+using namespace std::chrono_literals;
+static void Check(bool value, const char* message) {
+  if (!value) { std::fprintf(stderr,"FAIL %s\n",message); std::abort(); }
+}
+struct Probe {
+  std::atomic<bool> entered{false}, resume{false}, destroyed{false};
+  std::atomic<bool> used_after_destroy{false}, fault{false}, pause{false};
+  unsigned joins=0, stops=0, destroys=0, interrupts=0, traces=0;
+};
+struct FakeCommandProcessor {
+  Probe* probe;
+  unsigned counter_=0;
+  explicit FakeCommandProcessor(Probe& p): probe(&p) {}
+  ~FakeCommandProcessor() { ++probe->destroys; probe->destroyed.store(true); }
+  void Shutdown() { ++probe->stops; }
+  void increment_counter() {
+    // Model a preemption after MarkVblank fetched `this`, before its update.
+    Probe* const p=probe;
+    if (p->pause.load()) {
+      p->entered.store(true);
+      while (!p->resume.load()) std::this_thread::sleep_for(1ms);
+    }
+    if (p->destroyed.load()) {
+      p->used_after_destroy.store(true);
+      if (!p->fault.load()) return;
+    }
+    ++counter_;
+  }
+};
+struct FakeWorker {
+  Probe* probe;
+  std::atomic<bool>* running;
+  std::thread thread;
+  FakeWorker(Probe& p,std::atomic<bool>& r):probe(&p),running(&r) {}
+  int Wait(int,int,int,void*) {
+    Check(!running->load(),"stop flag precedes join");
+    probe->resume.store(true);
+    if (thread.joinable()) thread.join();
+    ++probe->joins;
+    return 0;
+  }
+};
+struct FakeAppContext {
+  template<class F> void CallInUIThreadSynchronous(F function) { function(); }
+};
+struct GraphicsSystem {
+  Probe& probe;
+  std::unique_ptr<FakeCommandProcessor> command_processor_;
+  std::atomic<bool> vsync_worker_running_{false};
+  std::unique_ptr<FakeWorker> vsync_worker_thread_;
+  std::unique_ptr<int> presenter_,provider_;
+  FakeAppContext* app_context_=nullptr;
+  explicit GraphicsSystem(Probe& p):probe(p) {}
+  void EndTracing() { ++probe.traces; }
+  void DispatchInterruptCallback(unsigned,unsigned) { ++probe.interrupts; }
+  void Shutdown();
+  void MarkVblank();
+};
+
+@SHUTDOWN@
+
+@MARK_VBLANK@
+
+int main(int argc,char**argv) {
+  Check(argc>=2,"case argument");
+  const bool baseline=argc>2 && !std::strcmp(argv[2],"baseline");
+  const bool overlap=!std::strcmp(argv[1],"overlap") || !std::strcmp(argv[1],"overlap-fault");
+  Probe probe; GraphicsSystem graphics(probe); FakeAppContext app;
+  if (overlap || !std::strcmp(argv[1],"cp-only") || !std::strcmp(argv[1],"full"))
+    graphics.command_processor_=std::make_unique<FakeCommandProcessor>(probe);
+  if (overlap || !std::strcmp(argv[1],"vsync-only") || !std::strcmp(argv[1],"full")) {
+    graphics.vsync_worker_running_.store(true);
+    graphics.vsync_worker_thread_=std::make_unique<FakeWorker>(probe,graphics.vsync_worker_running_);
+  }
+  if (!std::strcmp(argv[1],"full") || !std::strcmp(argv[1],"presenter")) {
+    graphics.presenter_=std::make_unique<int>(1);
+    graphics.provider_=std::make_unique<int>(2);
+    if (!std::strcmp(argv[1],"full")) graphics.app_context_=&app;
+  }
+  if (overlap) {
+    probe.pause.store(true); probe.fault.store(!std::strcmp(argv[1],"overlap-fault"));
+    graphics.vsync_worker_thread_->thread=std::thread([&]{ graphics.MarkVblank(); });
+    auto deadline=std::chrono::steady_clock::now()+3s;
+    while (!probe.entered.load()) {
+      Check(std::chrono::steady_clock::now()<deadline,"worker reaches the CP counter");
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+  const bool had_cp=bool(graphics.command_processor_),had_worker=bool(graphics.vsync_worker_thread_);
+  graphics.Shutdown();
+  Check(!graphics.command_processor_ && !graphics.vsync_worker_thread_ &&
+        !graphics.presenter_ && !graphics.provider_,"shutdown releases its owned resources");
+  Check(probe.stops==unsigned(had_cp) && probe.destroys==unsigned(had_cp),"CP stopped and destroyed once");
+  Check(probe.joins==unsigned(had_worker),"VSync joined once");
+  graphics.Shutdown();
+  Check(probe.stops==unsigned(had_cp) && probe.joins==unsigned(had_worker),"repeat shutdown is harmless");
+  if (overlap) {
+    std::printf("counter_call_after_CP_destruction=%d\n",probe.used_after_destroy.load());
+    Check(probe.used_after_destroy.load()==baseline,"lifetime order matches expected version");
+    Check(probe.interrupts==1,"in-flight vblank finishes");
+  }
+  std::printf("PASS %s hardware=not_run\n",argv[1]);
+}

@@ -1,0 +1,48 @@
+{
+  "upstream": "https://github.com/llvm/llvm-project",
+  "ref": "llvmorg-18.1.8",
+  "files": [
+    {
+      "path": "emutls.c",
+      "source": "compiler-rt/lib/builtins/emutls.c",
+      "upstream_blob_sha": "390ffb25f6cf00e640a1d27da3bbc836fc0bb8aa",
+      "modified": true
+    },
+    {
+      "path": "int_lib.h",
+      "source": "compiler-rt/lib/builtins/int_lib.h",
+      "upstream_blob_sha": "f6c1b7cff4b99b5dfbd6915bab7b75bc0aaea55e",
+      "modified": false
+    },
+    {
+      "path": "int_types.h",
+      "source": "compiler-rt/lib/builtins/int_types.h",
+      "upstream_blob_sha": "ca97391fc28466b9c4f1921c3ae014262a8f8485",
+      "modified": false
+    },
+    {
+      "path": "int_util.h",
+      "source": "compiler-rt/lib/builtins/int_util.h",
+      "upstream_blob_sha": "c372c2edc637137d28926ad9af948f31766907ba",
+      "modified": false
+    },
+    {
+      "path": "int_endianness.h",
+      "source": "compiler-rt/lib/builtins/int_endianness.h",
+      "upstream_blob_sha": "291c6b58c8ed9ed2ff2cc970bbfc0b486cc338ec",
+      "modified": false
+    },
+    {
+      "path": "LICENSE.TXT",
+      "source": "compiler-rt/LICENSE.TXT",
+      "upstream_blob_sha": "5a79a1b9d5cb0af9a779751f07033e44ca3b14d8",
+      "modified": false
+    },
+    {
+      "path": "CREDITS.TXT",
+      "source": "compiler-rt/CREDITS.TXT",
+      "upstream_blob_sha": "6964eba020b8aa7a08629b249e3b9aea3ce3e448",
+      "modified": false
+    }
+  ]
+}

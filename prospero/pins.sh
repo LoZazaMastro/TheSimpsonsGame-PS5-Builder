@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Revisions examined together for this port. Keep SDK headers and library paired.
+SIMPSONS_REVISION=4c34a3ac5a8856e92b31e704fe425a81c4e65003
+SONIC_REVISION=66d49e3062c3f4bc0a1dc8f1eb3ae438acc89323
+SDK_REVISION=b5efad528e0ac1b8289f39d72a0e890ff68ff0a6
+MESA_REVISION=0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8
+PROSPERO_TITLE_ID=PPSA74207

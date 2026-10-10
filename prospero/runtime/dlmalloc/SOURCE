@@ -1,0 +1,59 @@
+The Simpsons Game Recompiled: local PS5 allocator configuration, v3.8 diagnostics
+
+malloc.c
+  Doug Lea, dlmalloc 2.8.6, 2023 MIT-0 re-licensed release.
+  Original URL: https://gee.cs.oswego.edu/pub/misc/malloc.c
+  Retrieved here from the pinned SDK file, not from a changing upstream URL.
+  Repository: https://github.com/mihawk-99/PS5_PayloadSDK
+  Commit: b5efad528e0ac1b8289f39d72a0e890ff68ff0a6
+  Path: platform/src/dlmalloc/malloc.c
+  SHA256: be7be56b40b4b31417e74e77687f9b96127ea6cae534cf236aee40a4c739508d
+  Local diagnostic patch: cache the original first-smallbin predicate's
+  address-valid result and observed F->bk, then call an optional failure
+  hook only when the existing corruption branch is taken. No additional
+  dereference, allocator policy change or disabled safety check is added.
+  This file is no longer byte-identical to upstream. The host runner
+  reverses only this documented patch and checks the original SHA256.
+
+mspace.c
+  Derived from platform/src/dlmalloc/mspace.c at the same SDK commit.
+  Original SHA256: fe483dc1f5b3ee6691432724e96a0ac733517a485d947cb6cc0e82b4b62169a5
+  Copyright (C) 2026 Mihawk; GPL-3.0-or-later.
+  Local changes: USE_LOCKS=2 with allocator_lock.h, and terminal
+  CORRUPTION_ERROR_ACTION/USAGE_ERROR_ACTION diagnostics through the title.
+  The first-smallbin failure hook records arena, bin, P, F, index, observed
+  backlink, original request and the failed predicate in a fixed BSS ring.
+  It never reads a chunk header merely to include it in the log. The index
+  gives expected chunk size; actual damaged header size is not observed.
+  FOOTERS=1, MMAP_CLEARS=0, 32-byte alignment, 16 MiB granularity,
+  32 MiB mmap threshold and 64 KiB mapping units remain unchanged.
+
+allocator_lock.h
+  Local GPL-3.0-or-later implementation of the dlmalloc custom-lock contract.
+  Four-byte atomic ownership matches Sonic SDK pin
+  95c08f27386fc698f6bbe21dde3030140a41d10b and its released binary.
+  The implementation deliberately differs from Sonic after contention:
+  after 64 failed attempts it requests a 50 us nanosleep, preserving errno.
+  This addresses the starvation concern documented by SDK commit
+  3752be7e7812713e01fbe998d92952cd7b559f7f while retaining atomic ownership.
+  No pthread mutex, allocator or emulated-TLS calls occur in this lock.
+  Native errno is read/restored only around the slow-path nanosleep.
+
+Integration
+  Only this complete mspace translation unit replaces SDK mspace.o.
+  SDK heap.c still supplies eight arenas and direct-memory mappings;
+  ../heap_wrap_prospero.c replaces the complete SDK heap_wrap.o provider.
+  Its marked implementation body differs from SDK heap_wrap.c only in
+  function names/linkage, with the same ownership routing and native fallback.
+  Public noinline wrappers add bounded entry/exit events with original API
+  caller addresses, arguments and return values; nested wrapper calls remain
+  visible. The host runner restores names/linkage and requires byte identity.
+  All mstate layout readers/writers live together in malloc.c.
+  The title defines noreturn prospero_heap_failure(kind, operation, line,
+  mspace, pointer). Macro __LINE__ identifies the invocation site and
+  may be shared by multiple checks in a nested macro; __func__ names
+  the enclosing allocator operation. Detection remains terminal.
+
+Scope
+  This is a targeted compatibility change, not proof that lock choice
+  caused the previously observed heap corruption or that PS5 execution passes.

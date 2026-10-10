@@ -1,0 +1,420 @@
+name: Release (manual)
+
+# Manual, button-triggered release build for Windows + Linux.
+#
+# Builds the recompiled game (simpsons[.exe]), the extract-xiso installer tool,
+# and the launcher (a standalone .exe on Windows), then uploads them to a DRAFT
+# GitHub release for you to review before publishing.
+#
+# You must own The Simpsons Game (Xbox 360). No game assets are built or shipped;
+# players install content from their own legally-owned ISO via the launcher.
+#
+# Trigger: Actions tab -> "Release (manual)" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.3.0)"
+        required: true
+        default: "v0.0.0-test"
+      draft:
+        description: "Create the GitHub release as a draft"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # needed to create the release
+
+env:
+  LLVM_VERSION: "20.1.8"
+
+jobs:
+  # ---------------------------------------------------------------- Shaders
+  # The shader set for Windows packages: every shader translated ahead of
+  # time on a Steam Deck, then the hand-written replacements (glslang is
+  # readily available here, not on the Windows runners). The game serves the
+  # translations only where the translator and the GPU configuration match
+  # the ones they were made with, and translates at runtime everywhere else.
+  shaders:
+    name: Shader set
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the shader set matches the translator
+        run: python3 tools/native-renderer/check_translated_set.py
+      - name: Build the shader set
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+          mkdir -p native_shaders
+          tar -C native_shaders -xJf tools/native-renderer/translated_shaders.tar.xz
+          python3 tools/native-renderer/native_shaders/build_native_shaders.py \
+            native_shaders 0000400000000001
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-shaders
+          path: native_shaders
+
+  # ---------------------------------------------------------------- Windows
+  # Each platform is built twice: the default package for x86-64-v3 CPUs
+  # (AVX2, BMI2 and FMA: Intel Haswell, AMD Excavator or Zen, and newer) and
+  # a NoAVX2 package for older CPUs, which the default one fails to start on
+  # (0xc0000142 on Windows, #28). build_variant.txt tells the launcher which
+  # one is installed, so its updater keeps fetching the right package.
+  windows:
+    name: Windows x64 ${{ matrix.march }} (clang / Vulkan + D3D12 + D3D11)
+    needs: shaders
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - march: x86-64-v3
+            suffix: ""
+            artifact: windows-x64
+          - march: x86-64-v2
+            suffix: "-NoAVX2"
+            artifact: windows-x64-noavx2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM/Clang ${{ env.LLVM_VERSION }}
+        shell: pwsh
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\llvm.exe"
+          Start-Process -FilePath "$env:RUNNER_TEMP\llvm.exe" -ArgumentList '/S' -Wait
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Configure (game + SDK, Vulkan + D3D12 + experimental D3D11)
+        shell: pwsh
+        working-directory: simpsons
+        run: |
+          cmake --preset win-amd64-relwithdebinfo `
+            -DREXSDK_DIR="$env:GITHUB_WORKSPACE/tools/rexglue-sdk" `
+            -DREXGLUE_USE_D3D11=ON `
+            -DREXGLUE_ENABLE_LTO=ON `
+            -DSIMPSONS_X86_MARCH=${{ matrix.march }} `
+            "-DCMAKE_C_FLAGS=-march=${{ matrix.march }}" "-DCMAKE_CXX_FLAGS=-march=${{ matrix.march }}"
+
+      - name: Build simpsons.exe
+        working-directory: simpsons
+        run: cmake --build --preset win-amd64-relwithdebinfo --target simpsons
+
+      - name: Build extract-xiso
+        shell: pwsh
+        run: |
+          cmake -S tools/extract-xiso -B tools/extract-xiso/build -G Ninja `
+            -DCMAKE_C_COMPILER=clang "-DCMAKE_C_FLAGS=-DWIN32 -Wno-deprecated-declarations"
+          cmake --build tools/extract-xiso/build
+
+      - name: Stamp launcher version from release tag
+        shell: pwsh
+        run: |
+          # The packaged launcher must know exactly which release it is,
+          # otherwise its update checker compares a stale hardcoded VERSION
+          # against this very release and nags "update available" forever.
+          $v = "${{ inputs.tag }}".TrimStart("vV")
+          $py = "launcher/launcher.py"
+          $src = Get-Content $py -Raw
+          # No trailing $ anchor: .NET's (?m)$ matches before \n but not
+          # before \r\n, and Windows checkouts are usually CRLF.
+          $stamped = $src -replace '(?m)^VERSION = ".*"', "VERSION = `"$v`""
+          Set-Content $py -Value $stamped -Encoding utf8 -NoNewline
+          if (-not (Select-String -Path $py -Pattern "^VERSION = `"$([regex]::Escape($v))`"$" -Quiet)) {
+            Write-Error "Failed to stamp VERSION = `"$v`" into $py"
+            exit 1
+          }
+
+      - name: Build launcher .exe (native window)
+        shell: pwsh
+        run: |
+          # Unsigned PyInstaller executables with PyInstaller's prebuilt
+          # bootloader are a common antivirus false positive (Windows Defender
+          # reported Trojan:Win32/Suschil!rfn, #21 and #32). Compile the
+          # bootloader here instead, and give the exe version information like
+          # any other program.
+          python -m pip install --upgrade pip
+          $env:PYINSTALLER_COMPILE_BOOTLOADER = "1"
+          python -m pip install --no-binary pyinstaller pyinstaller
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Compiling the PyInstaller bootloader failed; using the prebuilt one"
+            python -m pip install pyinstaller
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          python -m pip install PySide6
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          $v = "${{ inputs.tag }}".TrimStart("vV")
+          $nums = @($v.Split(".") | ForEach-Object { $d = $_ -replace "[^0-9]", ""; if ($d) { [int]$d } else { 0 } })
+          while ($nums.Count -lt 4) { $nums += 0 }
+          $vt = ($nums[0..3] -join ", ")
+          $info = @"
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=($vt), prodvers=($vt), mask=0x3f, flags=0x0,
+                              OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+            kids=[
+              StringFileInfo([StringTable(u'040904B0', [
+                StringStruct(u'CompanyName', u'The Simpsons Game Recompiled contributors'),
+                StringStruct(u'FileDescription', u'The Simpsons Game Recompiled launcher'),
+                StringStruct(u'FileVersion', u'$v'),
+                StringStruct(u'InternalName', u'simpsons-launcher'),
+                StringStruct(u'LegalCopyright', u'Open source under the GNU GPL v3'),
+                StringStruct(u'OriginalFilename', u'simpsons-launcher.exe'),
+                StringStruct(u'ProductName', u'The Simpsons Game Recompiled'),
+                StringStruct(u'ProductVersion', u'$v')])]),
+              VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+            ]
+          )
+          "@
+          Set-Content version_info.txt -Value $info -Encoding utf8
+
+          pyinstaller --noconfirm --onefile --windowed --noupx --name simpsons-launcher `
+            --version-file version_info.txt --add-data "launcher/ui;ui" launcher/launcher.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Fetch ffmpeg (launcher artwork)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest $url -OutFile "$env:RUNNER_TEMP\ff.zip"
+          Expand-Archive "$env:RUNNER_TEMP\ff.zip" "$env:RUNNER_TEMP\ff" -Force
+          $ff = Get-ChildItem "$env:RUNNER_TEMP\ff" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $ff.FullName "ffmpeg.exe" -Force
+
+      # Next to simpsons.exe, where the game looks for it without a setting.
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-shaders
+          path: release/native_shaders
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bd = "simpsons/out/build/win-amd64-relwithdebinfo"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "$bd/simpsons.exe"                 release/
+          Copy-Item "$bd/*.dll"                         release/ -ErrorAction SilentlyContinue
+          # REXSDK_DIR's add_subdirectory build does NOT colocate the SDK's
+          # DLLs with the game exe -- they land in the SDK's own out dir
+          # (relative to tools/rexglue-sdk, not $bd) regardless of being
+          # built as a subdirectory of the game project. Confirmed via a
+          # real CI run: rexruntimerd.dll was silently missing from the
+          # package (Copy-Item on a non-matching wildcard doesn't error).
+          Copy-Item "tools/rexglue-sdk/out/win-amd64/*.dll" release/ -ErrorAction SilentlyContinue
+          Copy-Item "tools/extract-xiso/build/extract-xiso.exe" release/
+          Copy-Item "dist/simpsons-launcher.exe"        release/
+          Copy-Item "ffmpeg.exe"                         release/
+          Copy-Item "README.md"                         release/
+          Set-Content release/build_variant.txt -Encoding ascii -Value "${{ matrix.march }}"
+          python tools/native-renderer/write_runtime_defaults.py release/simpsons.toml windows
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path "release/native_shaders/translator_version.txt")) {
+            Write-Error "The shader set is missing from the package"
+            exit 1
+          }
+
+          # Fail here, not for a player after download, if a required file
+          # never made it into the package (Copy-Item on a non-matching
+          # wildcard is silent, so this is the only real check we get).
+          $required = @("simpsons.exe", "extract-xiso.exe", "simpsons-launcher.exe", "ffmpeg.exe", "rexruntimerd.dll", "build_variant.txt")
+          $required += (Get-ChildItem "$bd" -Filter "*.dll" -Name -ErrorAction SilentlyContinue)
+          $required += (Get-ChildItem "tools/rexglue-sdk/out/win-amd64" -Filter "*.dll" -Name -ErrorAction SilentlyContinue)
+          $required = $required | Select-Object -Unique
+          $missing = $required | Where-Object { -not (Test-Path "release/$_") }
+          if ($missing) {
+            Write-Error "Packaged release is missing required files: $($missing -join ', ')"
+            exit 1
+          }
+
+          Compress-Archive -Path release/* -DestinationPath "TheSimpsonsGame-Recompiled-Windows-x64${{ matrix.suffix }}.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: TheSimpsonsGame-Recompiled-Windows-x64${{ matrix.suffix }}.zip
+
+  # ---------------------------------------------------------------- Linux
+  # Best-effort; mirrors the documented Linux build. Uses the Vulkan backend.
+  linux:
+    name: Linux x64 ${{ matrix.march }} (clang / Vulkan)
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - march: x86-64-v3
+            suffix: ""
+            artifact: linux-x64
+          - march: x86-64-v2
+            suffix: "-NoAVX2"
+            artifact: linux-x64-noavx2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-20 + build deps
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config patchelf \
+            libgtk-3-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev wayland-protocols libudev-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev glslang-tools
+
+      - name: Configure (game + SDK, Vulkan)
+        working-directory: simpsons
+        run: |
+          cmake --preset linux-amd64-relwithdebinfo \
+            -DREXSDK_DIR="$GITHUB_WORKSPACE/tools/rexglue-sdk" \
+            -DSDL_DBUS=ON \
+            -DREXGLUE_ENABLE_LTO=ON \
+            -DSIMPSONS_X86_MARCH=${{ matrix.march }} \
+            "-DCMAKE_C_FLAGS=-march=${{ matrix.march }}" "-DCMAKE_CXX_FLAGS=-march=${{ matrix.march }}"
+
+      - name: Build simpsons
+        working-directory: simpsons
+        run: cmake --build --preset linux-amd64-relwithdebinfo --target simpsons
+
+      - name: Build extract-xiso
+        run: |
+          cmake -S tools/extract-xiso -B tools/extract-xiso/build -G Ninja -DCMAKE_C_COMPILER=clang-20
+          cmake --build tools/extract-xiso/build
+
+      - name: Stamp launcher version from release tag
+        run: |
+          # Same reason as the Windows job: the shipped launcher must report
+          # this release's own version or it will offer itself as an update.
+          v="${{ inputs.tag }}"
+          v="${v#v}"; v="${v#V}"
+          sed -i "s/^VERSION = \".*\"/VERSION = \"$v\"/" launcher/launcher.py
+          grep -q "^VERSION = \"$v\"" launcher/launcher.py || {
+            echo "Failed to stamp VERSION = \"$v\" into launcher/launcher.py"
+            exit 1
+          }
+
+      - name: Package
+        run: |
+          bd="simpsons/out/build/linux-amd64-relwithdebinfo"
+          mkdir -p release
+          cp "$bd/simpsons" release/
+          # REXSDK_DIR's add_subdirectory build does NOT colocate the SDK's
+          # shared libs with the game executable -- they land in the SDK's
+          # own out dir (relative to tools/rexglue-sdk, not $bd) regardless
+          # of being built as a subdirectory of the game project. Confirmed
+          # via a real CI run: librexruntimerd.so and libTracyClientrd.so
+          # were both missing from the package until this was added.
+          cp "$bd"/*.so* release/ 2>/dev/null || true
+          cp tools/rexglue-sdk/out/linux-amd64/*.so* release/ 2>/dev/null || true
+          cp tools/extract-xiso/build/extract-xiso release/
+          cp -r launcher release/launcher
+          cp README.md release/
+          # Older launchers already update launcher/ui, but do not copy new
+          # top-level folders. Keep the shader assets there so the first
+          # update from those versions receives them too.
+          mkdir -p release/launcher/ui/native_shaders
+          # Every other shader, translated ahead of time on a Steam Deck
+          # (tools/native-renderer/build_translated_set.sh): served only where
+          # the translator source and the GPU configuration match the ones it
+          # was made with, translated at runtime everywhere else.
+          if [ -f tools/native-renderer/translated_shaders.tar.xz ]; then
+            tar -C release/launcher/ui/native_shaders -xJf tools/native-renderer/translated_shaders.tar.xz
+          fi
+          # Build replacements last so an older module in the translated
+          # archive cannot overwrite the current shader source.
+          python3 tools/native-renderer/native_shaders/build_native_shaders.py \
+            release/launcher/ui/native_shaders 0000400000000001
+          printf '%s\n' "${{ matrix.march }}" > release/build_variant.txt
+          python3 tools/native-renderer/write_runtime_defaults.py release/simpsons.toml
+
+          # launcher.py's DEFAULT_CONFIG assumes the nested dev-tree layout
+          # (simpsons/out/build/.../simpsons, tools/extract-xiso/build/...).
+          # This package is flat instead (simpsons and extract-xiso sit right
+          # next to launcher/), so ship a launcher.json override describing
+          # the real layout -- otherwise the bundled launcher can't find the
+          # engine or the ISO extractor it's sitting right next to.
+          printf '{"engine": {"Linux": "simpsons"}, "extract_xiso": {"Linux": "extract-xiso"}, "lib_dirs": {"Linux": ["."]}}\n' > release/launcher/launcher.json
+
+          # One obvious double-clickable/runnable entry point at the top of
+          # the download, so a player never has to know the internal layout.
+          printf '#!/bin/sh\ncd "$(dirname "$0")/launcher" && exec ./simpsons-launcher.sh\n' > release/Play.sh
+          chmod +x release/Play.sh
+
+          # The runtime lib pulls in libTracyClient.so as a NEEDED entry it
+          # doesn't actually use symbols from; loading two copies of Tracy
+          # (once via this transitive dependency, once via simpsons' own
+          # direct link) segfaults in Tracy's global constructor at dl_init.
+          # De-duplicate by repointing that entry at libm.so.6, which every
+          # ELF already needs anyway.
+          for f in release/librexruntime*.so; do
+            [ -f "$f" ] && patchelf --replace-needed libTracyClient.so libm.so.6 "$f"
+          done
+
+          # Fail the build here, not for a player after download, if the
+          # packaged binary has any unresolved shared library dependency.
+          MISSING=$(LD_LIBRARY_PATH="$(pwd)/release" ldd release/simpsons | grep "not found" || true)
+          if [ -n "$MISSING" ]; then
+            echo "Packaged binary has unresolved shared library dependencies:"
+            echo "$MISSING"
+            exit 1
+          fi
+
+          tar -czf "TheSimpsonsGame-Recompiled-Linux-x64${{ matrix.suffix }}.tar.gz" -C release .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: TheSimpsonsGame-Recompiled-Linux-x64${{ matrix.suffix }}.tar.gz
+
+  # ---------------------------------------------------------------- Release
+  release:
+    name: GitHub release (latest, non-prerelease)
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      # Only the release notes are needed from the repository.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+
+      # The packages only (not the shader set the Windows packages include).
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: "*-x64*"
+
+      # Always a full release marked "latest" on publish — never a prerelease.
+      # The launcher's update checker uses /releases/latest, which ignores
+      # prereleases entirely, so a prerelease would be invisible to players.
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: The Simpsons Game — Recompiled ${{ inputs.tag }}
+          draft: ${{ inputs.draft }}
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: artifacts/**/*
+          # Written for each release in .github/release-notes.md.
+          body_path: .github/release-notes.md
+
+      # The release now holds its own copy of the zips, so drop the transient
+      # workflow artifacts to keep storage clean.
+      - name: Delete build artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: |
+            native-shaders
+            windows-x64
+            windows-x64-noavx2
+            linux-x64
+            linux-x64-noavx2

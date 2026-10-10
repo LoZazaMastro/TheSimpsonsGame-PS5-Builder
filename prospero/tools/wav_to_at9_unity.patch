@@ -1,0 +1,16 @@
+--- a/tools/wav_to_at9/wav_to_at9.cpp
++++ b/tools/wav_to_at9/wav_to_at9.cpp
+@@ -1663,4 +1663,9 @@
+-    // 4. Smooth cosine fade-in/out and -1.0 dBFS peak ceiling
+-    const double fadeInSec = 0.02;
+-    const double fadeOutSec = wasTrimmed ? 0.50 : 0.02;
+-    applyFadesAndPeakLimit(stereo, TARGET_SAMPLE_RATE, fadeInSec, fadeOutSec);
++    // 4. Preserve the prepared PCM level: the recipe already applied gain 0.5.
++    // No further gain, normalization, limiter or fades inside the encoder.
++    double peak = 0.0;
++    for (const auto& channel : stereo) {
++        for (double sample : channel) peak = std::max(peak, std::abs(sample));
++    }
++    std::printf("Prepared PCM: %.6f peak (%.3f dBFS), trimmed=%s\n",
++                peak, peak > 0.0 ? 20.0 * std::log10(peak) : -INFINITY,
++                wasTrimmed ? "yes" : "no");

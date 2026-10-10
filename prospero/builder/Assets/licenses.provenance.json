@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "scope": "Retain selected existing PS5 license texts and their exact provenance.\n\nThis is a collection of the requested project/ReX/runtime/RADV/Eden notices,\nnot a claim to be an exhaustive dependency or legal compatibility inventory.\n",
+  "files": [
+    {
+      "component": "The Simpsons Game project",
+      "file": "licenses/PROJECT-GPL-3.0.txt",
+      "source": "LICENSE",
+      "provenance": "TheSimpsonsGameRecomp source repository, LICENSE; this PS5 delivery uses the project license.",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "component": "ReX and its Xenia attribution",
+      "file": "licenses/REX-BSD-3-CLAUSE.txt",
+      "source": "tools/rexglue-sdk/LICENSE",
+      "provenance": "Vendored tools/rexglue-sdk/LICENSE; the original Tom Clay and Xenia copyright notices are retained.",
+      "bytes": 1659,
+      "sha256": "8e065be1da2ff9a16b1f063d4636d8b67e6a654bb90583ea4332e66ac421bb18"
+    },
+    {
+      "component": "LLVM runtime license and exceptions",
+      "file": "licenses/LLVM-APACHE-2.0-EXCEPTIONS.txt",
+      "source": "prospero/runtime/LICENSE.TXT",
+      "provenance": "The license text already supplied with prospero/runtime; LLVM Apache 2.0 with LLVM Exceptions.",
+      "bytes": 16708,
+      "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+    },
+    {
+      "component": "PS5 SDK license",
+      "file": "licenses/PS5-SDK-GPL-3.0.txt",
+      "source": "prospero/runtime/LICENSE-SDK-GPL-3.0.txt",
+      "provenance": "The SDK license text already retained in prospero/runtime; pinned SDK revision b5efad528e0ac1b8289f39d72a0e890ff68ff0a6.",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "component": "Mesa/RADV license information",
+      "file": "licenses/RADV-MESA-LICENSE-INFORMATION.txt",
+      "source": "/workspace/scratch/03556e484cb5/radv-v310-work/mesa-src/docs/license.rst",
+      "provenance": "PS5_Mesa revision 0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8, docs/license.rst; source-file SPDX notices also apply.",
+      "bytes": 1816,
+      "sha256": "0d1a0472ecc81830e75c20d59b0ea02841e3db21255e0ebad97ab682c54d6615"
+    },
+    {
+      "component": "Mesa MIT license text",
+      "file": "licenses/RADV-MESA-MIT.txt",
+      "source": "/workspace/scratch/03556e484cb5/radv-v310-work/mesa-src/licenses/MIT",
+      "provenance": "PS5_Mesa revision 0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8, licenses/MIT; retained verbatim from the source used for the VideoOut build.",
+      "bytes": 1372,
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f"
+    },
+    {
+      "component": "Eden frame-generation source license",
+      "file": "licenses/EDEN-GPL-3.0.txt",
+      "source": "/workspace/scratch/03556e484cb5/Eden-FrameGen-Reference/LICENSE.txt",
+      "provenance": "Eden revision 5f142c7926d0c7fcbbd0ce30794d72f638a43b2a, LICENSE.txt. Frame-generation source files retain GPL-3.0-or-later SPDX notices, Copyright 2026 Eden Emulator Project and, where present, Copyright 2025 lsfg-vk.",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    }
+  ],
+  "aggregate": {
+    "file": "PS5-THIRD-PARTY-NOTICES.txt",
+    "bytes": 130143,
+    "sha256": "9202b27f03c7198f5f99f10aa6f9f8f29f2ef375f3e6c12d09ea99a9f162a0db"
+  },
+  "pins": {
+    "mesa": "0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8",
+    "sdk": "b5efad528e0ac1b8289f39d72a0e890ff68ff0a6",
+    "eden": "5f142c7926d0c7fcbbd0ce30794d72f638a43b2a",
+    "prosperoEdenReference": "8ed1b84ab56e435792d6ad9469b44f3d025e77ba",
+    "edenArchiveSha256": "35ec0bb96b197181e66c0aeb8f44f0ff05334be832c631c50a4f1e271277285f"
+  },
+  "edenArchiveVerified": true
+}
